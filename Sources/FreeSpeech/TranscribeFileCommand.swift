@@ -12,8 +12,20 @@ enum TranscribeFileCommand {
         }
         let path = arguments[flagIndex + 1]
         var modelName = Settings().modelName
-        if let modelIndex = arguments.firstIndex(of: "--model"), arguments.count > modelIndex + 1 {
-            modelName = arguments[modelIndex + 1]
+        var beamSize = 1
+        var runs = 1
+        if let i = arguments.firstIndex(of: "--model"), arguments.count > i + 1 {
+            modelName = arguments[i + 1]
+        }
+        if let i = arguments.firstIndex(of: "--beam-size"), arguments.count > i + 1 {
+            beamSize = Int(arguments[i + 1]) ?? 1
+        }
+        if let i = arguments.firstIndex(of: "--runs"), arguments.count > i + 1 {
+            runs = max(1, Int(arguments[i + 1]) ?? 1)
+        }
+        var vocabularyHint: String?
+        if let i = arguments.firstIndex(of: "--prompt"), arguments.count > i + 1 {
+            vocabularyHint = arguments[i + 1]
         }
 
         do {
@@ -24,15 +36,23 @@ enum TranscribeFileCommand {
             try engine.loadModel(at: AppPaths.modelFile(named: modelName))
             let loadTime = CFAbsoluteTimeGetCurrent() - loadStart
 
-            let start = CFAbsoluteTimeGetCurrent()
-            let raw = try engine.transcribe(samples: samples, timeout: 120)
-            let transcribeTime = CFAbsoluteTimeGetCurrent() - start
+            // Multiple runs: first includes Metal warmup; report the best (steady-state).
+            var best = Double.greatestFiniteMagnitude
+            var raw = ""
+            for _ in 0..<runs {
+                let start = CFAbsoluteTimeGetCurrent()
+                raw = try engine.transcribe(
+                    samples: samples, timeout: 120, beamSize: beamSize,
+                    vocabularyHint: vocabularyHint)
+                best = min(best, CFAbsoluteTimeGetCurrent() - start)
+            }
 
             let cleaned = TranscriptCleaner.clean(raw) ?? ""
             print("model: \(modelName)")
+            print("beam_size: \(beamSize)")
             print(String(format: "model_load_s: %.3f", loadTime))
             print(String(format: "audio_s: %.1f", Double(samples.count) / Double(WhisperCppEngine.sampleRate)))
-            print(String(format: "transcribe_s: %.3f", transcribeTime))
+            print(String(format: "transcribe_s: %.3f", best))
             print("transcript: \(cleaned)")
             return 0
         } catch {

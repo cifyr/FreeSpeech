@@ -6,6 +6,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let settings: Settings
     var onSettingsChanged: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
 
     private var currentState: DictationState = .idle
     private var statusLine: String = "Idle"
@@ -97,6 +98,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.setSubmenu(modelMenu, for: modelItem)
 
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         let logItem = NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: "")
         logItem.target = self
         menu.addItem(logItem)
@@ -126,6 +131,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         settings.modelName = model
         Log.info("settings changed: model=\(model)")
         onSettingsChanged?()
+    }
+
+    @objc private func openSettings() {
+        onOpenSettings?()
     }
 
     @objc private func openLog() {

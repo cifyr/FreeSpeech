@@ -21,6 +21,16 @@ public struct HotkeyPreset: Equatable, Identifiable {
     public static func find(id: String) -> HotkeyPreset? {
         all.first { $0.id == id }
     }
+
+    // Any key the user records in settings becomes a custom preset; hold semantics
+    // (push-to-talk) work for both bare modifiers and regular keys.
+    public static func custom(keyCode: Int64) -> HotkeyPreset {
+        HotkeyPreset(
+            id: "custom",
+            displayName: KeyNames.name(forKeyCode: keyCode),
+            keyCode: keyCode,
+            kind: KeyNames.isModifier(keyCode) ? .modifier : .key)
+    }
 }
 
 public final class Settings {
@@ -29,8 +39,12 @@ public final class Settings {
     private enum Key {
         static let mode = "activationMode"
         static let hotkey = "hotkeyPresetID"
+        static let hotkeyKeyCode = "hotkeyKeyCode"
         static let model = "modelName"
         static let maxRecordingSeconds = "maxRecordingSeconds"
+        static let postProcessing = "postProcessingMode"
+        static let tone = "rewriteTone"
+        static let vocabularyHint = "vocabularyHint"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -43,14 +57,43 @@ public final class Settings {
     }
 
     public var hotkey: HotkeyPreset {
-        get { defaults.string(forKey: Key.hotkey).flatMap(HotkeyPreset.find) ?? .rightOption }
-        set { defaults.set(newValue.id, forKey: Key.hotkey) }
+        get {
+            let id = defaults.string(forKey: Key.hotkey)
+            if id == "custom", defaults.object(forKey: Key.hotkeyKeyCode) != nil {
+                return .custom(keyCode: Int64(defaults.integer(forKey: Key.hotkeyKeyCode)))
+            }
+            return id.flatMap(HotkeyPreset.find) ?? .rightOption
+        }
+        set {
+            defaults.set(newValue.id, forKey: Key.hotkey)
+            defaults.set(Int(newValue.keyCode), forKey: Key.hotkeyKeyCode)
+        }
     }
 
-    // base.en: smallest model that is accurate enough for dictation and comfortably
-    // beats the 2s latency bar on Apple Silicon. Swappable from the menu.
+    public var postProcessing: PostProcessingMode {
+        get { defaults.string(forKey: Key.postProcessing).flatMap(PostProcessingMode.init) ?? .cleanup }
+        set { defaults.set(newValue.rawValue, forKey: Key.postProcessing) }
+    }
+
+    public var tone: RewriteTone {
+        get { defaults.string(forKey: Key.tone).flatMap(RewriteTone.init) ?? .professional }
+        set { defaults.set(newValue.rawValue, forKey: Key.tone) }
+    }
+
+    // Fed to whisper as an initial prompt to bias proper nouns the user actually says.
+    // This phrasing benchmarked best: names as a list plus the key term in a sentence.
+    public var vocabularyHint: String {
+        get {
+            defaults.string(forKey: Key.vocabularyHint)
+                ?? "Caden Warren, Claude Code, FreeSpeech. My specialty is to use Claude Code on projects."
+        }
+        set { defaults.set(newValue, forKey: Key.vocabularyHint) }
+    }
+
+    // large-v3-turbo-q5_0 won the bench/results.json matrix: best WER (12.9% on the
+    // reference clip, with proper nouns right) at ~0.6s per 23s of audio on M4 Max.
     public var modelName: String {
-        get { defaults.string(forKey: Key.model) ?? "base.en" }
+        get { defaults.string(forKey: Key.model) ?? "large-v3-turbo-q5_0" }
         set { defaults.set(newValue, forKey: Key.model) }
     }
 

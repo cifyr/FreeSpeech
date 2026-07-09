@@ -8,8 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let engine: TranscriptionEngine = WhisperCppEngine()
     private let inserter = TextInserter()
+    private let postProcessor = PostProcessor()
     private var hud: HUDController!
     private var statusBar: StatusBarController!
+    private var settingsWindow: SettingsWindowController!
 
     // Serial queue: model load runs first, transcriptions queue behind it, so the
     // model loads once at launch and stays warm.
@@ -31,6 +33,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBar = StatusBarController(settings: settings)
         statusBar.onSettingsChanged = { [weak self] in self?.applySettings() }
+        settingsWindow = SettingsWindowController { [weak self] in
+            guard let self else { fatalError("settings store requested after teardown") }
+            return SettingsStore(
+                settings: self.settings,
+                languageModelAvailable: self.postProcessor.languageModelAvailable,
+                onHotkeyChanged: { self.installHotkey() },
+                onModelChanged: { self.applySettings() })
+        }
+        statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
 
         recorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
         recorder.onMaxDuration = { [weak self] in
@@ -166,9 +177,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             do {
                 let raw = try self.engine.transcribe(
-                    samples: samples, timeout: Self.transcriptionTimeout)
-                let cleaned = TranscriptCleaner.clean(raw)
-                DispatchQueue.main.async { self.finish(transcript: cleaned, stoppedAt: stoppedAt) }
+                    samples: samples, timeout: Self.transcriptionTimeout,
+                    beamSize: 1, vocabularyHint: self.settings.vocabularyHint)
+                let mode = self.settings.postProcessing
+                // "Do nothing" means raw whisper output, only trimmed so pasting is sane.
+                var text: String? = mode == .off
+                    ? raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    : TranscriptCleaner.clean(raw)
+                if text?.isEmpty == true { text = nil }
+                if let cleaned = text, mode.needsLanguageModel {
+                    DispatchQueue.main.async { self.hud.show(.processing) }
+                    text = self.postProcessor.process(cleaned, mode: mode, tone: self.settings.tone)
+                }
+                let result = text
+                DispatchQueue.main.async { self.finish(transcript: result, stoppedAt: stoppedAt) }
             } catch {
                 Log.error("transcription failed: \(error.localizedDescription)")
                 DispatchQueue.main.async {

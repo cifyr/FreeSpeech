@@ -29,7 +29,7 @@ enum TranscriptionError: LocalizedError {
 protocol TranscriptionEngine: AnyObject {
     var isLoaded: Bool { get }
     func loadModel(at url: URL) throws
-    func transcribe(samples: [Float], timeout: TimeInterval) throws -> String
+    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?) throws -> String
 }
 
 private final class AbortBox {
@@ -67,7 +67,7 @@ final class WhisperCppEngine: TranscriptionEngine {
         Log.info(String(format: "model load done in %.2fs", CFAbsoluteTimeGetCurrent() - started))
     }
 
-    func transcribe(samples: [Float], timeout: TimeInterval) throws -> String {
+    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?) throws -> String {
         guard let ctx else { throw TranscriptionError.notLoaded }
 
         // whisper.cpp requires at least ~1s of audio; pad short clips with silence.
@@ -77,7 +77,11 @@ final class WhisperCppEngine: TranscriptionEngine {
             input.append(contentsOf: [Float](repeating: 0, count: minSamples - input.count))
         }
 
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        var params = whisper_full_default_params(
+            beamSize > 1 ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY)
+        if beamSize > 1 {
+            params.beam_search.beam_size = Int32(beamSize)
+        }
         params.print_progress = false
         params.print_realtime = false
         params.print_special = false
@@ -86,6 +90,13 @@ final class WhisperCppEngine: TranscriptionEngine {
         params.no_context = true
         params.suppress_blank = true
         params.n_threads = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount)))
+
+        // Vocabulary bias: whisper conditions its decoder on this as if it preceded
+        // the audio, steering proper nouns (names, product terms) the right way.
+        let cHint: UnsafeMutablePointer<CChar>? =
+            (vocabularyHint?.isEmpty == false) ? strdup(vocabularyHint!) : nil
+        defer { if let cHint { free(cHint) } }
+        if let cHint { params.initial_prompt = UnsafePointer(cHint) }
 
         abortBox.deadline = CFAbsoluteTimeGetCurrent() + timeout
         params.abort_callback = { userData in
@@ -96,7 +107,7 @@ final class WhisperCppEngine: TranscriptionEngine {
         params.abort_callback_user_data = Unmanaged.passUnretained(abortBox).toOpaque()
 
         let started = CFAbsoluteTimeGetCurrent()
-        Log.info("transcription start: \(input.count) samples (\(String(format: "%.1f", Double(input.count) / Double(Self.sampleRate)))s)")
+        Log.info("transcription start: \(input.count) samples (\(String(format: "%.1f", Double(input.count) / Double(Self.sampleRate)))s), beam \(beamSize), hint \(vocabularyHint.map { "\"\($0)\"" } ?? "none")")
 
         let status: Int32 = "en".withCString { lang in
             params.language = lang

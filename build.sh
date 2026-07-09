@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHISPER_TAG="v1.9.1"
 WHISPER_DIR="$ROOT/vendor/whisper.cpp"
 LIB_DIR="$ROOT/vendor/lib"
-MODEL_NAME="base.en"
+MODEL_NAME="large-v3-turbo-q5_0"
 SKIP_MODEL=0
 MODELS_DIR="$HOME/Library/Application Support/FreeSpeech/models"
 

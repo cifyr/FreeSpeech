@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "FreeSpeech",
-    platforms: [.macOS(.v13)],
+    // macOS 26: required for the on-device FoundationModels rewrite engine.
+    platforms: [.macOS("26.0")],
     targets: [
         // Pure-Foundation logic kept separate so it is unit-testable without linking whisper.
         .target(name: "FreeSpeechCore", path: "Sources/FreeSpeechCore"),
@@ -19,6 +20,7 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
                 .linkedFramework("Accelerate"),
+                .linkedFramework("FoundationModels"),
                 .linkedLibrary("c++"),
             ]
         ),
