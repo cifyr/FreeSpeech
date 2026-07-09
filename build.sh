@@ -61,9 +61,12 @@ echo "==> Building FreeSpeech (release)"
 echo "==> Assembling dist/FreeSpeech.app"
 APP="$ROOT/dist/FreeSpeech.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/FreeSpeech" "$APP/Contents/MacOS/FreeSpeech"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+# Icon is pre-generated from assets/logo.svg (qlmanage render + iconutil) and
+# committed, so the build has no fragile SVG-rendering dependency.
+cp "$ROOT/Resources/FreeSpeech.icns" "$APP/Contents/Resources/FreeSpeech.icns"
 # Ad-hoc signature: enough for local TCC (mic + accessibility) prompts to work.
 # Note: rebuilding changes the signature, so Accessibility must be re-granted after rebuilds.
 codesign --force --sign - --identifier com.cadenwarren.freespeech "$APP"

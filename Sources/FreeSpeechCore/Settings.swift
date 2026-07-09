@@ -85,6 +85,10 @@ public final class Settings {
         static let learningEnabled = "learningEnabled"
         static let micPriority = "micPriority"
         static let maxRecordingSeconds = "maxRecordingSeconds"
+        static let systemHotkey = "systemHotkeyPresetID"
+        static let systemHotkeyKeyCode = "systemHotkeyKeyCode"
+        static let systemHotkeyModifiers = "systemHotkeyModifiers"
+        static let copyToClipboard = "copyToClipboard"
         static let postProcessing = "postProcessingMode"
         static let tone = "rewriteTone"
         static let vocabularyHint = "vocabularyHint"
@@ -115,6 +119,33 @@ public final class Settings {
             defaults.set(Int(newValue.keyCode), forKey: Key.hotkeyKeyCode)
             defaults.set(Int(newValue.modifiers.rawValue), forKey: Key.hotkeyModifiers)
         }
+    }
+
+    // Right Command default: mirrors the mic's Right Option (hold to capture),
+    // stays off the app-shortcut namespace, and never collides with the mic default.
+    public var systemAudioHotkey: HotkeyPreset {
+        get {
+            let id = defaults.string(forKey: Key.systemHotkey)
+            if id == "custom", defaults.object(forKey: Key.systemHotkeyKeyCode) != nil {
+                return .custom(
+                    keyCode: Int64(defaults.integer(forKey: Key.systemHotkeyKeyCode)),
+                    modifiers: HotkeyModifiers(
+                        rawValue: UInt64(defaults.integer(forKey: Key.systemHotkeyModifiers))))
+            }
+            return id.flatMap(HotkeyPreset.find) ?? .rightCommand
+        }
+        set {
+            defaults.set(newValue.id, forKey: Key.systemHotkey)
+            defaults.set(Int(newValue.keyCode), forKey: Key.systemHotkeyKeyCode)
+            defaults.set(Int(newValue.modifiers.rawValue), forKey: Key.systemHotkeyModifiers)
+        }
+    }
+
+    // Default ON: dictating usually means "I want this text", so keeping it on the
+    // clipboard is the useful default; OFF restores the prior clipboard as before.
+    public var copyToClipboard: Bool {
+        get { defaults.object(forKey: Key.copyToClipboard) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.copyToClipboard) }
     }
 
     public var learningEnabled: Bool {

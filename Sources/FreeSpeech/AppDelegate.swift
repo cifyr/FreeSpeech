@@ -5,7 +5,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private var machine = DictationStateMachine()
     private let hotkey = HotkeyManager()
+    private let systemHotkey = HotkeyManager()
     private let recorder = AudioRecorder()
+    private let systemRecorder = SystemAudioRecorder()
+    // Which capture the current session uses; the machine guards cross-source events.
+    private var activeSource: AudioSource = .microphone
     private let engine: TranscriptionEngine = WhisperCppEngine()
     private let inserter = TextInserter()
     private let postProcessor = PostProcessor()
@@ -46,14 +50,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
 
-        recorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
-        recorder.onMaxDuration = { [weak self] in
+        let onMaxDuration: () -> Void = { [weak self] in
             guard let self else { return }
             self.perform(self.machine.handle(.recordingTimedOut, mode: self.settings.mode))
         }
+        recorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
+        recorder.onMaxDuration = onMaxDuration
+        systemRecorder.onLevel = { [weak self] level in self?.hud.updateLevel(level) }
+        systemRecorder.onMaxDuration = onMaxDuration
         hotkey.onEvent = { [weak self] direction in
             guard let self else { return }
-            let event: DictationEvent = direction == .down ? .hotkeyDown : .hotkeyUp
+            let event: DictationEvent = direction == .down
+                ? .hotkeyDown(.microphone) : .hotkeyUp(.microphone)
+            self.perform(self.machine.handle(event, mode: self.settings.mode))
+        }
+        systemHotkey.onEvent = { [weak self] direction in
+            guard let self else { return }
+            let event: DictationEvent = direction == .down
+                ? .hotkeyDown(.systemAudio) : .hotkeyUp(.systemAudio)
             self.perform(self.machine.handle(event, mode: self.settings.mode))
         }
 
@@ -68,7 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkey.stop()
+        systemHotkey.stop()
         recorder.stop()
+        systemRecorder.stop()
         Log.info("FreeSpeech terminating")
     }
 
@@ -98,6 +114,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try hotkey.start(preset: settings.hotkey)
         } catch {
             Log.error("hotkey installation failed: \(error.localizedDescription)")
+            showError(error.localizedDescription)
+        }
+        let mic = settings.hotkey
+        let system = settings.systemAudioHotkey
+        guard mic.keyCode != system.keyCode || mic.modifiers != system.modifiers
+                || mic.kind != system.kind else {
+            Log.error("system audio hotkey \(system.displayName) collides with the mic hotkey, not installing it")
+            showError("System audio hotkey matches the mic hotkey — pick a different one in Settings")
+            systemHotkey.stop()
+            return
+        }
+        do {
+            try systemHotkey.start(preset: system)
+        } catch {
+            Log.error("system audio hotkey installation failed: \(error.localizedDescription)")
             showError(error.localizedDescription)
         }
     }
@@ -130,12 +161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func perform(_ action: DictationAction) {
         statusBar.update(state: machine.state)
         switch action {
-        case .startRecording:
-            startRecording()
+        case .startRecording(let source):
+            startRecording(source: source)
         case .stopAndTranscribe:
             stopAndTranscribe()
         case .abortRecording(let reason):
+            // Never leave any capture hot after an error, whichever source ran.
             recorder.stop()
+            systemRecorder.stop()
             hud.show(.error(reason))
         case .showError(let reason):
             hud.show(.error(reason))
@@ -146,26 +179,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startRecording() {
-        guard Permissions.microphoneAuthorized() else {
-            Permissions.openMicrophoneSettings()
-            perform(machine.handle(.recordingFailed("Microphone not granted — enable FreeSpeech in System Settings > Privacy & Security > Microphone"), mode: settings.mode))
-            return
-        }
-        // HUD first: it must appear the instant the hotkey fires.
-        hud.show(.recording)
-        do {
-            try recorder.start(
-                maxSeconds: settings.maxRecordingSeconds,
-                device: AudioDevices.preferredDevice(priority: settings.micPriority))
-        } catch {
-            Log.error("recording start failed: \(error.localizedDescription)")
-            perform(machine.handle(.recordingFailed(error.localizedDescription), mode: settings.mode))
+    private func startRecording(source: AudioSource) {
+        activeSource = source
+        switch source {
+        case .microphone:
+            guard Permissions.microphoneAuthorized() else {
+                Permissions.openMicrophoneSettings()
+                perform(machine.handle(.recordingFailed("Microphone not granted — enable FreeSpeech in System Settings > Privacy & Security > Microphone"), mode: settings.mode))
+                return
+            }
+            // HUD first: it must appear the instant the hotkey fires.
+            hud.show(.recording(.microphone))
+            do {
+                try recorder.start(
+                    maxSeconds: settings.maxRecordingSeconds,
+                    device: AudioDevices.preferredDevice(priority: settings.micPriority))
+            } catch {
+                Log.error("recording start failed: \(error.localizedDescription)")
+                perform(machine.handle(.recordingFailed(error.localizedDescription), mode: settings.mode))
+            }
+
+        case .systemAudio:
+            // Screen Recording permission is requested lazily, only for this mode.
+            guard Permissions.screenRecordingAuthorized(requestIfNeeded: true) else {
+                Permissions.openScreenRecordingSettings()
+                perform(machine.handle(.recordingFailed(SystemAudioError.permissionDenied.errorDescription ?? "Screen Recording not granted"), mode: settings.mode))
+                return
+            }
+            hud.show(.recording(.systemAudio))
+            systemRecorder.start(maxSeconds: settings.maxRecordingSeconds) { [weak self] error in
+                guard let self, let error else { return }
+                self.perform(self.machine.handle(
+                    .recordingFailed(error.localizedDescription), mode: self.settings.mode))
+            }
         }
     }
 
     private func stopAndTranscribe() {
-        let samples = recorder.stop()
+        let samples = activeSource == .systemAudio ? systemRecorder.stop() : recorder.stop()
         hud.show(.transcribing)
 
         let stoppedAt = CFAbsoluteTimeGetCurrent()
@@ -226,12 +277,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            try inserter.insert(transcript)
+            let inserted = try inserter.insert(transcript, copyToClipboard: settings.copyToClipboard)
             Log.info(String(format: "stop-to-insert latency: %.2fs", CFAbsoluteTimeGetCurrent() - stoppedAt))
-            hud.show(.success)
+            if inserted.isEmpty {
+                // Everything the user said was already at the caret.
+                hud.show(.error("Nothing new to insert"))
+            } else {
+                hud.show(.success)
+            }
             perform(machine.handle(.transcriptionSucceeded, mode: settings.mode))
-            if settings.learningEnabled {
-                editWatcher.watch(inserted: transcript)
+            if settings.learningEnabled, !inserted.isEmpty {
+                editWatcher.watch(inserted: inserted)
             }
         } catch {
             Log.error("insertion failed: \(error.localizedDescription)")

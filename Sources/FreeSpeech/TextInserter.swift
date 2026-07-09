@@ -10,18 +10,30 @@ enum TextInserterError: LocalizedError {
 }
 
 // Clipboard + synthesized Cmd+V: the one insertion path that works across native,
-// Electron, web, and terminal apps alike. Prior clipboard is always restored.
+// Electron, web, and terminal apps alike. Caret context (read over AX, bounded)
+// drives overlap dedup and continuation casing before the paste.
 final class TextInserter {
     private static let clipboardRestoreDelay: TimeInterval = 0.7
 
-    func insert(_ text: String) throws {
+    // Returns the text actually inserted ("" when the transcript was fully
+    // duplicated at the caret and nothing needed pasting).
+    @discardableResult
+    func insert(_ text: String, copyToClipboard: Bool) throws -> String {
+        let before = AXFieldReader.textBeforeCaret()
+        Log.info("insert context: caret-before \(before.map { "\"\(String($0.suffix(60)))\"" } ?? "unreadable")")
+        let final = SmartInsertion.prepare(transcript: text, textBeforeCaret: before)
+        guard !final.isEmpty else {
+            Log.info("nothing new to insert: transcript fully overlaps text at caret")
+            return ""
+        }
+
         let pasteboard = NSPasteboard.general
         let saved = snapshot(of: pasteboard)
         let target = NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown"
-        Log.info("inserting \(text.count) chars into frontmost app \"\(target)\" via clipboard+Cmd+V")
+        Log.info("inserting \(final.count) chars into frontmost app \"\(target)\" via clipboard+Cmd+V (copyToClipboard \(copyToClipboard))")
 
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        pasteboard.setString(final, forType: .string)
 
         do {
             try synthesizePaste()
@@ -30,11 +42,23 @@ final class TextInserter {
             throw error
         }
 
-        // Restore after the target app has consumed the paste event.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardRestoreDelay) { [weak self] in
-            self?.restore(saved, to: pasteboard)
-            Log.info("clipboard restored (\(saved.count) item(s))")
+        if copyToClipboard {
+            // Leave the transcript on the clipboard by user preference. Re-set it
+            // after the paste settles so the leading-space variant is not what stays.
+            let clip = text
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardRestoreDelay) {
+                pasteboard.clearContents()
+                pasteboard.setString(clip, forType: .string)
+                Log.info("transcript left on clipboard (\(clip.count) chars)")
+            }
+        } else {
+            // Restore after the target app has consumed the paste event.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardRestoreDelay) { [weak self] in
+                self?.restore(saved, to: pasteboard)
+                Log.info("clipboard restored (\(saved.count) item(s))")
+            }
         }
+        return final
     }
 
     private func synthesizePaste() throws {

@@ -14,10 +14,8 @@ public enum TranscriptCleaner {
             of: #"\s+"#, with: " ", options: .regularExpression)
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-
-        if let first = text.first, first.isLowercase {
-            text = first.uppercased() + text.dropFirst()
-        }
+        // First-letter casing is decided at insert time by SmartInsertion, which
+        // knows the caret context; capitalizing here would fight continuations.
         return text
     }
 }

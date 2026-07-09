@@ -8,6 +8,8 @@
 	<string>FreeSpeech</string>
 	<key>CFBundleExecutable</key>
 	<string>FreeSpeech</string>
+	<key>CFBundleIconFile</key>
+	<string>FreeSpeech</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.cadenwarren.freespeech</string>
 	<key>CFBundlePackageType</key>

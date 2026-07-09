@@ -27,8 +27,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         switch state {
         case .idle:
             (symbol, description, line) = ("mic", "FreeSpeech idle", "Idle — hold \(settings.hotkey.displayName)")
-        case .recording:
-            (symbol, description, line) = ("mic.fill", "FreeSpeech recording", "Recording…")
+        case .recording(let source):
+            (symbol, description, line) = (
+                source == .systemAudio ? "speaker.wave.2.fill" : "mic.fill",
+                "FreeSpeech recording",
+                "Recording (\(source.displayName))…")
         case .transcribing:
             (symbol, description, line) = ("waveform", "FreeSpeech transcribing", "Transcribing…")
         case .error(let message):

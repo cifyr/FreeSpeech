@@ -4,9 +4,9 @@ import XCTest
 final class DictationStateMachineTests: XCTestCase {
     func testPushToTalkHappyPath() {
         var m = DictationStateMachine()
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .pushToTalk), .startRecording)
-        XCTAssertEqual(m.state, .recording)
-        XCTAssertEqual(m.handle(.hotkeyUp, mode: .pushToTalk), .stopAndTranscribe)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .pushToTalk), .startRecording(.microphone))
+        XCTAssertEqual(m.state, .recording(.microphone))
+        XCTAssertEqual(m.handle(.hotkeyUp(.microphone), mode: .pushToTalk), .stopAndTranscribe)
         XCTAssertEqual(m.state, .transcribing)
         XCTAssertEqual(m.handle(.transcriptionSucceeded, mode: .pushToTalk), .becameIdle)
         XCTAssertEqual(m.state, .idle)
@@ -14,46 +14,46 @@ final class DictationStateMachineTests: XCTestCase {
 
     func testToggleHappyPath() {
         var m = DictationStateMachine()
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .toggle), .startRecording)
-        XCTAssertEqual(m.handle(.hotkeyUp, mode: .toggle), .none)
-        XCTAssertEqual(m.state, .recording)
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .toggle), .stopAndTranscribe)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .toggle), .startRecording(.microphone))
+        XCTAssertEqual(m.handle(.hotkeyUp(.microphone), mode: .toggle), .none)
+        XCTAssertEqual(m.state, .recording(.microphone))
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .toggle), .stopAndTranscribe)
         XCTAssertEqual(m.state, .transcribing)
     }
 
     func testPressesDuringTranscribingAreIgnored() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
-        _ = m.handle(.hotkeyUp, mode: .pushToTalk)
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .pushToTalk), .none)
-        XCTAssertEqual(m.handle(.hotkeyUp, mode: .pushToTalk), .none)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
+        _ = m.handle(.hotkeyUp(.microphone), mode: .pushToTalk)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .pushToTalk), .none)
+        XCTAssertEqual(m.handle(.hotkeyUp(.microphone), mode: .pushToTalk), .none)
         XCTAssertEqual(m.state, .transcribing)
     }
 
     func testDoubleDownIsIgnoredInPushToTalk() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .pushToTalk), .none)
-        XCTAssertEqual(m.state, .recording)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .pushToTalk), .none)
+        XCTAssertEqual(m.state, .recording(.microphone))
     }
 
     func testStrayUpInIdleIsIgnored() {
         var m = DictationStateMachine()
-        XCTAssertEqual(m.handle(.hotkeyUp, mode: .pushToTalk), .none)
+        XCTAssertEqual(m.handle(.hotkeyUp(.microphone), mode: .pushToTalk), .none)
         XCTAssertEqual(m.state, .idle)
     }
 
     func testMaxDurationStopsRecording() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
         XCTAssertEqual(m.handle(.recordingTimedOut, mode: .pushToTalk), .stopAndTranscribe)
         XCTAssertEqual(m.state, .transcribing)
     }
 
     func testTranscriptionFailureSurfacesErrorThenRecovers() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
-        _ = m.handle(.hotkeyUp, mode: .pushToTalk)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
+        _ = m.handle(.hotkeyUp(.microphone), mode: .pushToTalk)
         XCTAssertEqual(
             m.handle(.transcriptionFailed("model load failed"), mode: .pushToTalk),
             .showError("model load failed"))
@@ -64,16 +64,43 @@ final class DictationStateMachineTests: XCTestCase {
 
     func testHotkeyDownInErrorStateStartsFreshRecording() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
         _ = m.handle(.recordingFailed("audio device init failed"), mode: .pushToTalk)
         XCTAssertEqual(m.state, .error("audio device init failed"))
-        XCTAssertEqual(m.handle(.hotkeyDown, mode: .pushToTalk), .startRecording)
-        XCTAssertEqual(m.state, .recording)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .pushToTalk), .startRecording(.microphone))
+        XCTAssertEqual(m.state, .recording(.microphone))
+    }
+
+    func testSystemAudioHappyPath() {
+        var m = DictationStateMachine()
+        XCTAssertEqual(
+            m.handle(.hotkeyDown(.systemAudio), mode: .pushToTalk),
+            .startRecording(.systemAudio))
+        XCTAssertEqual(m.state, .recording(.systemAudio))
+        XCTAssertEqual(m.handle(.hotkeyUp(.systemAudio), mode: .pushToTalk), .stopAndTranscribe)
+    }
+
+    func testOtherSourceCannotStopARecording() {
+        var m = DictationStateMachine()
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
+        // Releasing (or pressing) the system-audio hotkey must not cut the mic take.
+        XCTAssertEqual(m.handle(.hotkeyUp(.systemAudio), mode: .pushToTalk), .none)
+        XCTAssertEqual(m.handle(.hotkeyDown(.systemAudio), mode: .pushToTalk), .none)
+        XCTAssertEqual(m.state, .recording(.microphone))
+        XCTAssertEqual(m.handle(.hotkeyUp(.microphone), mode: .pushToTalk), .stopAndTranscribe)
+    }
+
+    func testOtherSourceCannotStopToggleRecording() {
+        var m = DictationStateMachine()
+        _ = m.handle(.hotkeyDown(.systemAudio), mode: .toggle)
+        XCTAssertEqual(m.handle(.hotkeyDown(.microphone), mode: .toggle), .none)
+        XCTAssertEqual(m.state, .recording(.systemAudio))
+        XCTAssertEqual(m.handle(.hotkeyDown(.systemAudio), mode: .toggle), .stopAndTranscribe)
     }
 
     func testRecordingFailureAbortsToError() {
         var m = DictationStateMachine()
-        _ = m.handle(.hotkeyDown, mode: .pushToTalk)
+        _ = m.handle(.hotkeyDown(.microphone), mode: .pushToTalk)
         XCTAssertEqual(
             m.handle(.recordingFailed("no input device"), mode: .pushToTalk),
             .abortRecording("no input device"))

@@ -6,8 +6,9 @@ final class TranscriptCleanerTests: XCTestCase {
         XCTAssertEqual(TranscriptCleaner.clean("  Hello world. \n"), "Hello world.")
     }
 
-    func testCapitalizesFirstLetter() {
-        XCTAssertEqual(TranscriptCleaner.clean("hello there"), "Hello there")
+    func testDoesNotCapitalize() {
+        // Casing is decided at insert time by SmartInsertion (caret context).
+        XCTAssertEqual(TranscriptCleaner.clean("hello there"), "hello there")
     }
 
     func testBlankAudioMarkerYieldsNil() {
@@ -24,11 +25,11 @@ final class TranscriptCleanerTests: XCTestCase {
     func testMarkerInsideSpeechIsStripped() {
         XCTAssertEqual(
             TranscriptCleaner.clean("send the report [BLANK_AUDIO] by Friday"),
-            "Send the report by Friday")
+            "send the report by Friday")
     }
 
     func testCollapsesInternalWhitespace() {
-        XCTAssertEqual(TranscriptCleaner.clean("one  two\n three"), "One two three")
+        XCTAssertEqual(TranscriptCleaner.clean("one  two\n three"), "one two three")
     }
 
     func testAlreadyCleanTextUnchanged() {

@@ -40,4 +40,22 @@ enum Permissions {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
         NSWorkspace.shared.open(url)
     }
+
+    // Lazy: only the system-audio mode needs this, so it is checked (and the
+    // system prompt triggered) on first use rather than at launch.
+    static func screenRecordingAuthorized(requestIfNeeded: Bool) -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        Log.info("screen recording permission missing")
+        if requestIfNeeded {
+            let granted = CGRequestScreenCaptureAccess()
+            Log.info("screen recording permission request result: \(granted)")
+            return granted
+        }
+        return false
+    }
+
+    static func openScreenRecordingSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+        NSWorkspace.shared.open(url)
+    }
 }

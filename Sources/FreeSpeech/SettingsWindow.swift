@@ -22,6 +22,13 @@ final class SettingsStore: ObservableObject {
             onHotkeyChanged()
         }
     }
+    @Published var systemHotkey: HotkeyPreset {
+        didSet {
+            settings.systemAudioHotkey = systemHotkey
+            onHotkeyChanged()
+        }
+    }
+    @Published var copyToClipboard: Bool { didSet { settings.copyToClipboard = copyToClipboard } }
     @Published var modelName: String {
         didSet {
             settings.modelName = modelName
@@ -31,7 +38,8 @@ final class SettingsStore: ObservableObject {
     @Published var postProcessing: PostProcessingMode { didSet { settings.postProcessing = postProcessing } }
     @Published var tone: RewriteTone { didSet { settings.tone = tone } }
     @Published var vocabularyHint: String { didSet { settings.vocabularyHint = vocabularyHint } }
-    @Published var isCapturingShortcut = false
+    enum ShortcutTarget { case microphone, systemAudio }
+    @Published var capturingTarget: ShortcutTarget?
     @Published var installedModels: [String] = []
     @Published var connectedMics: [AudioInputDevice] = []
     @Published var micPriority: [String] { didSet { settings.micPriority = micPriority } }
@@ -50,6 +58,8 @@ final class SettingsStore: ObservableObject {
         self.onModelChanged = onModelChanged
         _mode = Published(initialValue: settings.mode)
         _hotkey = Published(initialValue: settings.hotkey)
+        _systemHotkey = Published(initialValue: settings.systemAudioHotkey)
+        _copyToClipboard = Published(initialValue: settings.copyToClipboard)
         _modelName = Published(initialValue: settings.modelName)
         _postProcessing = Published(initialValue: settings.postProcessing)
         _tone = Published(initialValue: settings.tone)
@@ -95,9 +105,9 @@ final class SettingsStore: ObservableObject {
 
     // Captures the next chord as the hotkey: a plain key, a combo like Cmd+K or
     // Cmd+Opt+Space, or a bare modifier (press and release it alone). Esc cancels.
-    func beginShortcutCapture() {
+    func beginShortcutCapture(for target: ShortcutTarget) {
         guard captureMonitor == nil else { return }
-        isCapturingShortcut = true
+        capturingTarget = target
         involvedModifiers = []
         Log.info("shortcut capture started")
         captureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
@@ -144,15 +154,20 @@ final class SettingsStore: ObservableObject {
             NSEvent.removeMonitor(captureMonitor)
         }
         captureMonitor = nil
-        isCapturingShortcut = false
+        capturingTarget = nil
         involvedModifiers = []
     }
 
     private func capture(_ keyCode: Int64, modifiers: HotkeyModifiers) {
+        let target = capturingTarget
         endShortcutCapture()
         let preset = HotkeyPreset.custom(keyCode: keyCode, modifiers: modifiers)
-        Log.info("shortcut captured: \(preset.displayName) [keyCode \(keyCode), modifiers \(modifiers.rawValue)]")
-        hotkey = preset
+        Log.info("shortcut captured for \(target == .systemAudio ? "system audio" : "mic"): \(preset.displayName) [keyCode \(keyCode), modifiers \(modifiers.rawValue)]")
+        if target == .systemAudio {
+            systemHotkey = preset
+        } else {
+            hotkey = preset
+        }
     }
 }
 
@@ -174,25 +189,22 @@ struct SettingsView: View {
                         }
                     }
                     Divider().overlay(Color.dsLine).padding(.vertical, 4)
-                    sectionLabel("Hotkey")
-                    HStack(spacing: 10) {
-                        Text(store.isCapturingShortcut ? "PRESS A KEY\u{2026}" : store.hotkey.displayName.uppercased())
-                            .font(.system(size: 13, weight: .medium, design: .monospaced))
-                            .kerning(0.8)
-                            .foregroundStyle(store.isCapturingShortcut ? Color.dsAccent : Color.dsPaper)
-                            .padding(.horizontal, 14)
-                            .frame(height: 36)
-                            .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
-                                    .strokeBorder(store.isCapturingShortcut ? Color.dsAccent : Color.dsLine, lineWidth: 1))
-                        Button(store.isCapturingShortcut ? "Cancel" : "Record Shortcut") {
-                            store.isCapturingShortcut ? store.endShortcutCapture() : store.beginShortcutCapture()
-                        }
-                        .buttonStyle(GhostButtonStyle())
+                    sectionLabel("Hotkeys")
+                    shortcutRow("Microphone", preset: store.hotkey, target: .microphone)
+                    shortcutRow("System audio", preset: store.systemHotkey, target: .systemAudio)
+                    Text("Hold to talk, or press to start and stop in toggle mode. Combos like \u{2318}K or \u{2318}\u{2325}Space work, and so do bare modifiers like Right Option (press and release it alone while recording). System audio captures what the Mac is playing — the other side of a call — and needs Screen Recording permission on first use.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                card {
+                    HStack {
+                        sectionLabel("Keep transcript on clipboard")
                         Spacer()
+                        chip(store.copyToClipboard ? "On" : "Off", selected: store.copyToClipboard) {
+                            store.copyToClipboard.toggle()
+                        }
                     }
-                    Text("Hold it to talk, or press to start and stop in toggle mode. Combos like \u{2318}K or \u{2318}\u{2325}Space work, and so do bare modifiers like Right Option (press and release it alone while recording).")
+                    Text("On: every dictation stays on the clipboard after insertion, ready to paste again. Off: your previous clipboard contents are restored.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
@@ -344,6 +356,31 @@ struct SettingsView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous)
                     .strokeBorder(Color.dsLine, lineWidth: 1))
+    }
+
+    private func shortcutRow(_ title: String, preset: HotkeyPreset, target: SettingsStore.ShortcutTarget) -> some View {
+        let capturing = store.capturingTarget == target
+        return HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.dsMuted)
+                .frame(width: 96, alignment: .leading)
+            Text(capturing ? "PRESS A KEY\u{2026}" : preset.displayName.uppercased())
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .kerning(0.8)
+                .foregroundStyle(capturing ? Color.dsAccent : Color.dsPaper)
+                .padding(.horizontal, 14)
+                .frame(height: 36)
+                .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                        .strokeBorder(capturing ? Color.dsAccent : Color.dsLine, lineWidth: 1))
+            Button(capturing ? "Cancel" : "Record") {
+                capturing ? store.endShortcutCapture() : store.beginShortcutCapture(for: target)
+            }
+            .buttonStyle(GhostButtonStyle())
+            Spacer()
+        }
     }
 
     private func tag(_ text: String, color: Color) -> some View {

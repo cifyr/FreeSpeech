@@ -24,7 +24,8 @@ final class EditWatcher {
 
         let baseline = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard let element = Self.focusedElement(), let before = Self.value(of: element) else {
+            guard let element = AXFieldReader.focusedElement(),
+                  let before = AXFieldReader.value(of: element) else {
                 Log.info("edit learning: focused field not readable over AX, skipping")
                 return
             }
@@ -35,7 +36,7 @@ final class EditWatcher {
             let settle = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 // Same element re-read later: survives the user focusing elsewhere.
-                guard let after = Self.value(of: element), after != before else { return }
+                guard let after = AXFieldReader.value(of: element), after != before else { return }
                 let pairs = EditDiff.corrections(inserted: inserted, before: before, after: after)
                 guard !pairs.isEmpty else { return }
                 for (from, to) in pairs {
@@ -50,21 +51,4 @@ final class EditWatcher {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.baselineDelay, execute: baseline)
     }
 
-    private static func focusedElement() -> AXUIElement? {
-        let system = AXUIElementCreateSystemWide()
-        var focused: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute as CFString, &focused)
-        guard status == .success, let focused else { return nil }
-        return (focused as! AXUIElement)
-    }
-
-    private static func value(of element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(
-            element, kAXValueAttribute as CFString, &value)
-        guard status == .success, let text = value as? String, !text.isEmpty else { return nil }
-        // Very large documents make diffing meaningless; EditDiff also guards on words.
-        return text.count > 60_000 ? nil : text
-    }
 }
