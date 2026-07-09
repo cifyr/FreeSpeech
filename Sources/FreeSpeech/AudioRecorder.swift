@@ -54,21 +54,23 @@ final class AudioRecorder {
                 Log.info("recording using preferred mic: \(device.name) [\(device.uid)]")
             }
         }
-        let inputFormat = input.outputFormat(forBus: 0)
+        // inputFormat(forBus:) reflects the hardware AFTER the device bind above;
+        // outputFormat can report the previous (default) device's format, which
+        // made non-default mics deliver audio the converter mis-resampled.
+        let inputFormat = input.inputFormat(forBus: 0)
         Log.info("recording start: input format \(inputFormat.sampleRate)Hz \(inputFormat.channelCount)ch, max \(Int(maxSeconds))s")
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw AudioRecorderError.noInputDevice
-        }
-        guard let converter = AVAudioConverter(from: inputFormat, to: Self.targetFormat) else {
-            throw AudioRecorderError.converterInitFailed
         }
 
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
-        self.converter = converter
+        // Converter is created lazily from the first buffer's actual format:
+        // the only description guaranteed to match what the tap delivers.
+        self.converter = nil
 
-        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, _ in
             self?.process(buffer: buffer)
         }
         engine.prepare()
@@ -110,6 +112,14 @@ final class AudioRecorder {
     }
 
     private func process(buffer: AVAudioPCMBuffer) {
+        if converter == nil {
+            Log.info("recording buffer format: \(buffer.format.sampleRate)Hz \(buffer.format.channelCount)ch")
+            converter = AVAudioConverter(from: buffer.format, to: Self.targetFormat)
+            if converter == nil {
+                Log.error("cannot convert \(buffer.format.sampleRate)Hz \(buffer.format.channelCount)ch to 16kHz mono")
+                return
+            }
+        }
         guard let converter else { return }
 
         if let data = buffer.floatChannelData?[0], buffer.frameLength > 0 {

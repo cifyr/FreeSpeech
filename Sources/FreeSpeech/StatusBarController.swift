@@ -1,18 +1,22 @@
 import AppKit
 import FreeSpeechCore
 
-// Menu bar icon reflects the pipeline state; menu exposes mode, hotkey, model, quit.
+// Menu bar icon reflects the pipeline state; menu exposes mode, hotkey, mic input,
+// cleanup/rewrite, clipboard, quit.
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let settings: Settings
+    private let languageModelAvailable: Bool
     var onSettingsChanged: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onOpenOnboarding: (() -> Void)?
 
     private var currentState: DictationState = .idle
     private var statusLine: String = "Idle"
 
-    init(settings: Settings) {
+    init(settings: Settings, languageModelAvailable: Bool) {
         self.settings = settings
+        self.languageModelAvailable = languageModelAvailable
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         let menu = NSMenu()
@@ -45,7 +49,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    // Rebuild each time it opens so checkmarks and model list stay fresh.
+    // Rebuild each time it opens so checkmarks and the connected-device list stay fresh.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
@@ -80,31 +84,59 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(hotkeyItem)
         menu.setSubmenu(hotkeyMenu, for: hotkeyItem)
 
-        let modelMenu = NSMenu()
-        let installed = AppPaths.installedModels()
-        if installed.isEmpty {
-            let none = NSMenuItem(
-                title: "No models found — run ./build.sh", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            modelMenu.addItem(none)
-        }
-        for model in installed {
+        let micMenu = NSMenu()
+        // Empty UID represents "system default input"; matches Settings.micPriority == [].
+        let selectedUID = settings.micPriority.first ?? ""
+        let defaultItem = NSMenuItem(
+            title: "System Default", action: #selector(selectMicInput(_:)), keyEquivalent: "")
+        defaultItem.target = self
+        defaultItem.representedObject = ""
+        defaultItem.state = selectedUID.isEmpty ? .on : .off
+        micMenu.addItem(defaultItem)
+        let devices = AudioDevices.inputDevices()
+        if !devices.isEmpty { micMenu.addItem(.separator()) }
+        for device in devices {
             let item = NSMenuItem(
-                title: model, action: #selector(selectModel(_:)), keyEquivalent: "")
+                title: device.name, action: #selector(selectMicInput(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = model
-            item.state = settings.modelName == model ? .on : .off
-            modelMenu.addItem(item)
+            item.representedObject = device.uid
+            item.state = selectedUID == device.uid ? .on : .off
+            micMenu.addItem(item)
         }
-        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
-        menu.addItem(modelItem)
-        menu.setSubmenu(modelMenu, for: modelItem)
+        let micItem = NSMenuItem(title: "Mic Input", action: nil, keyEquivalent: "")
+        menu.addItem(micItem)
+        menu.setSubmenu(micMenu, for: micItem)
+
+        let ppMenu = NSMenu()
+        for mode in PostProcessingMode.allCases {
+            let item = NSMenuItem(
+                title: mode.displayName, action: #selector(selectPostProcessing(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = settings.postProcessing == mode ? .on : .off
+            // Rewrite modes need Apple Intelligence; disable them when it's unavailable.
+            item.isEnabled = languageModelAvailable || !mode.needsLanguageModel
+            ppMenu.addItem(item)
+        }
+        let ppItem = NSMenuItem(title: "Cleanup / Rewrite", action: nil, keyEquivalent: "")
+        menu.addItem(ppItem)
+        menu.setSubmenu(ppMenu, for: ppItem)
+
+        let clipItem = NSMenuItem(
+            title: "Keep transcript on clipboard", action: #selector(toggleClipboard), keyEquivalent: "")
+        clipItem.target = self
+        clipItem.state = settings.copyToClipboard ? .on : .off
+        menu.addItem(clipItem)
 
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(
             title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let onboardingItem = NSMenuItem(
+            title: "Setup Guide\u{2026}", action: #selector(openOnboarding), keyEquivalent: "")
+        onboardingItem.target = self
+        menu.addItem(onboardingItem)
         let logItem = NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: "")
         logItem.target = self
         menu.addItem(logItem)
@@ -129,15 +161,34 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         onSettingsChanged?()
     }
 
-    @objc private func selectModel(_ sender: NSMenuItem) {
-        guard let model = sender.representedObject as? String else { return }
-        settings.modelName = model
-        Log.info("settings changed: model=\(model)")
+    @objc private func selectMicInput(_ sender: NSMenuItem) {
+        guard let uid = sender.representedObject as? String else { return }
+        // A single chosen device becomes the whole priority list; empty means system default.
+        settings.micPriority = uid.isEmpty ? [] : [uid]
+        Log.info("settings changed: micInput=\(uid.isEmpty ? "systemDefault" : uid)")
+        onSettingsChanged?()
+    }
+
+    @objc private func selectPostProcessing(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = PostProcessingMode(rawValue: raw) else { return }
+        settings.postProcessing = mode
+        Log.info("settings changed: postProcessing=\(mode.rawValue)")
+        onSettingsChanged?()
+    }
+
+    @objc private func toggleClipboard() {
+        settings.copyToClipboard.toggle()
+        Log.info("settings changed: copyToClipboard=\(settings.copyToClipboard)")
         onSettingsChanged?()
     }
 
     @objc private func openSettings() {
         onOpenSettings?()
+    }
+
+    @objc private func openOnboarding() {
+        onOpenOnboarding?()
     }
 
     @objc private func openLog() {

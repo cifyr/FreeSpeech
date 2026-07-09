@@ -92,6 +92,8 @@ public final class Settings {
         static let postProcessing = "postProcessingMode"
         static let tone = "rewriteTone"
         static let vocabularyHint = "vocabularyHint"
+        static let screenContextEnabled = "screenContextEnabled"
+        static let onboarded = "hasCompletedOnboarding"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -153,6 +155,13 @@ public final class Settings {
         set { defaults.set(newValue, forKey: Key.learningEnabled) }
     }
 
+    // Default ON: names visible on screen (email threads, chat windows) bias
+    // transcription so replies get people's names right. Local-only, toggleable.
+    public var screenContextEnabled: Bool {
+        get { defaults.object(forKey: Key.screenContextEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.screenContextEnabled) }
+    }
+
     // Ordered microphone UIDs; the first one currently connected wins.
     // Empty means "system default input".
     public var micPriority: [String] {
@@ -193,6 +202,12 @@ public final class Settings {
             return v > 0 ? v : 60
         }
         set { defaults.set(newValue, forKey: Key.maxRecordingSeconds) }
+    }
+
+    // First-run onboarding shows until completed; the menu can reset this to replay it.
+    public var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: Key.onboarded) }
+        set { defaults.set(newValue, forKey: Key.onboarded) }
     }
 }
 

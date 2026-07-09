@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hud: HUDController!
     private var statusBar: StatusBarController!
     private var settingsWindow: SettingsWindowController!
+    private var onboardingWindow: OnboardingWindowController!
+    // Set while the onboarding practice step is active: transcripts route here instead
+    // of being inserted, so the user learns the hotkey without pasting into a real field.
+    private var onPracticeTranscript: ((String?) -> Void)?
 
     // Serial queue: model load runs first, transcriptions queue behind it, so the
     // model loads once at launch and stays warm.
@@ -37,7 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.perform(self.machine.handle(.errorDismissed, mode: self.settings.mode))
             }
         }
-        statusBar = StatusBarController(settings: settings)
+        statusBar = StatusBarController(
+            settings: settings, languageModelAvailable: postProcessor.languageModelAvailable)
         statusBar.onSettingsChanged = { [weak self] in self?.applySettings() }
         settingsWindow = SettingsWindowController { [weak self] in
             guard let self else { fatalError("settings store requested after teardown") }
@@ -49,6 +54,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onModelChanged: { self.applySettings() })
         }
         statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        onboardingWindow = OnboardingWindowController { [weak self] close in
+            guard let self else { fatalError("onboarding store requested after teardown") }
+            return OnboardingStore(settings: self.settings, deps: OnboardingDeps(
+                microphoneAuthorized: { Permissions.microphoneAuthorized() },
+                requestMicrophone: { completion in Permissions.requestMicrophone(completion: completion) },
+                accessibilityTrusted: { Permissions.accessibilityTrusted(promptIfNeeded: false) },
+                requestAccessibility: {
+                    let trusted = Permissions.accessibilityTrusted(promptIfNeeded: true)
+                    if !trusted { Permissions.openAccessibilitySettings() }
+                    return trusted
+                },
+                installHotkey: { self.installHotkey() },
+                beginPractice: { handler in self.onPracticeTranscript = handler },
+                endPractice: { self.onPracticeTranscript = nil },
+                onFinished: close))
+        }
+        statusBar.onOpenOnboarding = { [weak self] in self?.onboardingWindow.show() }
 
         let onMaxDuration: () -> Void = { [weak self] in
             guard let self else { return }
@@ -71,13 +93,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.perform(self.machine.handle(event, mode: self.settings.mode))
         }
 
-        Permissions.requestMicrophone { granted in
-            if !granted {
-                Log.error("microphone permission not granted — dictation will fail until enabled")
+        // On first run, onboarding drives the permission prompts; don't fire them behind it.
+        if settings.hasCompletedOnboarding {
+            Permissions.requestMicrophone { granted in
+                if !granted {
+                    Log.error("microphone permission not granted — dictation will fail until enabled")
+                }
             }
         }
         installHotkeyOrPollForAccessibility()
         loadModel()
+        if !settings.hasCompletedOnboarding {
+            onboardingWindow.show()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -91,12 +119,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Setup
 
     private func installHotkeyOrPollForAccessibility() {
-        if Permissions.accessibilityTrusted(promptIfNeeded: true) {
+        // During onboarding the setup window owns the permission UX, so stay quiet here.
+        let onboarded = settings.hasCompletedOnboarding
+        if Permissions.accessibilityTrusted(promptIfNeeded: onboarded) {
             installHotkey()
             return
         }
-        showError("Accessibility not granted — enable FreeSpeech in System Settings > Privacy & Security > Accessibility")
-        Permissions.openAccessibilitySettings()
+        if onboarded {
+            showError("Accessibility not granted — enable FreeSpeech in System Settings > Privacy & Security > Accessibility")
+            Permissions.openAccessibilitySettings()
+        }
         // Poll until granted: AX trust can change at any time and there is no notification API.
         accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self, Permissions.accessibilityTrusted(promptIfNeeded: false) else { return }
@@ -181,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRecording(source: AudioSource) {
         activeSource = source
+        captureScreenContext()
         switch source {
         case .microphone:
             guard Permissions.microphoneAuthorized() else {
@@ -215,11 +248,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Reads names visible in the focused field/window while the user is still
+    // speaking, so the terms are ready by transcription time at zero latency cost.
+    private var pendingContextTerms: [String] = []
+    private let contextQueue = DispatchQueue(
+        label: "com.cadenwarren.freespeech.screencontext", qos: .userInitiated)
+
+    private func captureScreenContext() {
+        pendingContextTerms = []
+        guard settings.screenContextEnabled else { return }
+        contextQueue.async { [weak self] in
+            guard let self else { return }
+            let terms = AXFieldReader.screenContextText()
+                .map { ScreenContext.properNouns(in: $0) } ?? []
+            if !terms.isEmpty {
+                Log.info("screen context terms: \(terms.joined(separator: ", "))")
+            }
+            DispatchQueue.main.async { self.pendingContextTerms = terms }
+        }
+    }
+
     private func stopAndTranscribe() {
         let samples = activeSource == .systemAudio ? systemRecorder.stop() : recorder.stop()
         hud.show(.transcribing)
 
         let stoppedAt = CFAbsoluteTimeGetCurrent()
+        let contextTerms = pendingContextTerms
         whisperQueue.async { [weak self] in
             guard let self else { return }
 
@@ -239,6 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .filter { !hint.localizedCaseInsensitiveContains($0) }
                 if !learnedTerms.isEmpty {
                     hint += " " + learnedTerms.joined(separator: ", ") + "."
+                }
+                // Names visible on screen when recording started (email thread,
+                // chat window) bias whisper toward what the user is replying to.
+                let screenTerms = contextTerms
+                    .filter { !hint.localizedCaseInsensitiveContains($0) }
+                if !screenTerms.isEmpty {
+                    hint += " " + screenTerms.joined(separator: ", ") + "."
                 }
                 let raw = try self.engine.transcribe(
                     samples: samples, timeout: Self.transcriptionTimeout,
@@ -270,6 +331,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finish(transcript: String?, stoppedAt: CFAbsoluteTime) {
+        // Onboarding practice: show what was heard in the setup window, never insert.
+        if let practice = onPracticeTranscript {
+            practice(transcript)
+            hud.show(transcript == nil ? .error("No speech detected") : .success)
+            _ = machine.handle(.transcriptionSucceeded, mode: settings.mode)
+            statusBar.update(state: machine.state)
+            return
+        }
         guard let transcript else {
             hud.show(.error("No speech detected"))
             _ = machine.handle(.transcriptionSucceeded, mode: settings.mode)

@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 import FreeSpeechCore
@@ -51,6 +52,45 @@ enum AXFieldReader {
             return nil
         }
         return result
+    }
+
+    // Focused field text plus the frontmost window title: the context a person
+    // sees when dictating (email thread, chat, document). Bounded like the caret
+    // read; nil when nothing is readable.
+    static func screenContextText() -> String? {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: String?
+        queue.async {
+            defer { semaphore.signal() }
+            var parts: [String] = []
+            if let element = focusedElement(), let text = value(of: element) {
+                parts.append(String(text.suffix(4000)))
+            }
+            if let title = frontmostWindowTitle() {
+                parts.append(title)
+            }
+            result = parts.isEmpty ? nil : parts.joined(separator: "\n")
+        }
+        if semaphore.wait(timeout: .now() + readTimeout) == .timedOut {
+            Log.info("AX screen context read timed out, skipping context terms")
+            return nil
+        }
+        return result
+    }
+
+    private static func frontmostWindowTitle() -> String? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            axApp, kAXFocusedWindowAttribute as CFString, &window) == .success,
+            let window else { return nil }
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            (window as! AXUIElement), kAXTitleAttribute as CFString, &title) == .success else {
+            return nil
+        }
+        return title as? String
     }
 
     private static func caretLocation(of element: AXUIElement) -> Int? {

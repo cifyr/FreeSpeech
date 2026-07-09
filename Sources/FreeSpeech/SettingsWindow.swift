@@ -44,6 +44,7 @@ final class SettingsStore: ObservableObject {
     @Published var connectedMics: [AudioInputDevice] = []
     @Published var micPriority: [String] { didSet { settings.micPriority = micPriority } }
     @Published var learningEnabled: Bool { didSet { settings.learningEnabled = learningEnabled } }
+    @Published var screenContextEnabled: Bool { didSet { settings.screenContextEnabled = screenContextEnabled } }
     @Published var learnedSummary: String = ""
 
     let languageModelAvailable: Bool
@@ -66,6 +67,7 @@ final class SettingsStore: ObservableObject {
         _vocabularyHint = Published(initialValue: settings.vocabularyHint)
         _micPriority = Published(initialValue: settings.micPriority)
         _learningEnabled = Published(initialValue: settings.learningEnabled)
+        _screenContextEnabled = Published(initialValue: settings.screenContextEnabled)
         refresh()
     }
 
@@ -276,12 +278,13 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Color.dsMuted)
                     }
-                    ForEach(store.installedModels, id: \.self) { model in
+                    ForEach(ModelCatalog.ordered(store.installedModels), id: \.id) { info in
                         selectableRow(
-                            title: model,
-                            subtitle: modelSubtitle(model),
-                            selected: store.modelName == model
-                        ) { store.modelName = model }
+                            title: info.name,
+                            subtitle: modelSubtitle(info),
+                            selected: store.modelName == info.id,
+                            badge: info.recommended ? "Recommended" : nil
+                        ) { store.modelName = info.id }
                     }
                 }
                 card {
@@ -323,6 +326,17 @@ struct SettingsView: View {
                             RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
                                 .strokeBorder(Color.dsLine, lineWidth: 1))
                     Text("Steers transcription toward names and jargon you use, e.g. \"Caden Warren, Claude Code\".")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    Divider().overlay(Color.dsLine).padding(.vertical, 4)
+                    HStack {
+                        sectionLabel("Use on-screen context")
+                        Spacer()
+                        chip(store.screenContextEnabled ? "On" : "Off", selected: store.screenContextEnabled) {
+                            store.screenContextEnabled.toggle()
+                        }
+                    }
+                    Text("Reads names visible in the focused window when you start dictating — replying to Gurkaran makes \"Gurkaran\" transcribe correctly. Local only, nothing stored.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
@@ -418,7 +432,7 @@ struct SettingsView: View {
 
     private func selectableRow(
         title: String, subtitle: String, selected: Bool,
-        disabled: Bool = false, action: @escaping () -> Void
+        disabled: Bool = false, badge: String? = nil, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
@@ -428,9 +442,12 @@ struct SettingsView: View {
                         selected ? Color.dsAccent : Color.dsFaint, lineWidth: 1.5))
                     .frame(width: 14, height: 14)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(disabled ? Color.dsFaint : Color.dsPaper)
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(disabled ? Color.dsFaint : Color.dsPaper)
+                        if let badge { tag(badge, color: .dsAccent) }
+                    }
                     Text(subtitle)
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsMuted)
@@ -448,11 +465,19 @@ struct SettingsView: View {
         .animation(.easeOut(duration: 0.15), value: selected)
     }
 
-    private func modelSubtitle(_ model: String) -> String {
-        let url = AppPaths.modelFile(named: model)
+    // Dot meter like ●●●○○ for a 1...5 rating.
+    private func meter(_ value: Int) -> String {
+        let n = max(0, min(5, value))
+        return String(repeating: "\u{25CF}", count: n) + String(repeating: "\u{25CB}", count: 5 - n)
+    }
+
+    private func modelSubtitle(_ info: ModelInfo) -> String {
+        let url = AppPaths.modelFile(named: info.id)
         let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
-        let size = bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
-        return size.isEmpty ? "whisper ggml model" : "whisper ggml model, \(size)"
+        let size = bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+        var line = "\(info.tagline)  ·  Accuracy \(meter(info.accuracy))  ·  Speed \(meter(info.speed))"
+        if let size { line += "  ·  \(size)" }
+        return line
     }
 }
 

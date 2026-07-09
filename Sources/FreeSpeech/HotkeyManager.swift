@@ -20,12 +20,16 @@ final class HotkeyManager {
     private var preset: HotkeyPreset = .rightOption
     private var modifierIsDown = false
     private var comboIsDown = false
+    // The combo ended by modifier release but the key is still physically down:
+    // its remaining repeats and final key-up must not leak to the app.
+    private var awaitingKeyUp = false
 
     func start(preset: HotkeyPreset) throws {
         stop()
         self.preset = preset
         self.modifierIsDown = false
         self.comboIsDown = false
+        self.awaitingKeyUp = false
 
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
@@ -97,24 +101,35 @@ final class HotkeyManager {
             return false
 
         case (.key, .keyDown):
-            guard keyCode == preset.keyCode, !comboIsDown,
-                  event.flags.intersection(Self.relevantFlags) == required else { return false }
+            guard keyCode == preset.keyCode else { return false }
+            // While the combo is held (push-to-talk), the key autorepeats: every
+            // one of those must be swallowed or the app underneath receives a
+            // stream of e.g. Cmd+= presses while the user is dictating.
+            if comboIsDown || awaitingKeyUp { return true }
+            guard event.flags.intersection(Self.relevantFlags) == required else { return false }
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return true }
             comboIsDown = true
             dispatch(.down)
             return true
 
         case (.key, .keyUp):
-            guard keyCode == preset.keyCode, comboIsDown else { return false }
+            guard keyCode == preset.keyCode else { return false }
+            if awaitingKeyUp {
+                awaitingKeyUp = false
+                return true
+            }
+            guard comboIsDown else { return false }
             comboIsDown = false
             dispatch(.up)
             return true
 
         case (.key, .flagsChanged):
             // Push-to-talk on a combo: releasing a required modifier before the key
-            // (e.g. Cmd before K in Cmd+K) must still count as release.
+            // (e.g. Cmd before = in Cmd+=) must still count as release, and the
+            // still-held key is then muted until its own key-up.
             if comboIsDown, !event.flags.intersection(Self.relevantFlags).contains(required) {
                 comboIsDown = false
+                awaitingKeyUp = true
                 dispatch(.up)
             }
             return false
