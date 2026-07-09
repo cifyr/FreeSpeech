@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="FreeSpeech — local, private voice dictation for macOS. Hold a key, speak, and your words appear on-device.">
+<title>FreeSpeech — Local voice dictation for macOS</title>
+<style>
+  :root {
+    --bg: #EFEFF1;
+    --surface: #FFFFFF;
+    --surface-2: #F6F6F8;
+    --line: #E2E2E6;
+    --text: #16161A;
+    --muted: #63636B;
+    --faint: #9A9AA2;
+    --accent: #E5352B;
+    --accent-soft: rgba(229, 53, 43, 0.08);
+    --wave-bg: rgba(229, 53, 43, 0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0A0A0C;
+      --surface: #131318;
+      --surface-2: #1D1D24;
+      --line: #2A2A33;
+      --text: #F5F5F0;
+      --muted: #8E8E99;
+      --faint: #55555F;
+      --accent: #FF453A;
+      --accent-soft: rgba(255, 69, 58, 0.10);
+      --wave-bg: rgba(255, 69, 58, 0.08);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #EFEFF1; --surface: #FFFFFF; --surface-2: #F6F6F8; --line: #E2E2E6;
+    --text: #16161A; --muted: #63636B; --faint: #9A9AA2;
+    --accent: #E5352B; --accent-soft: rgba(229, 53, 43, 0.08); --wave-bg: rgba(229, 53, 43, 0.10);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0A0A0C; --surface: #131318; --surface-2: #1D1D24; --line: #2A2A33;
+    --text: #F5F5F0; --muted: #8E8E99; --faint: #55555F;
+    --accent: #FF453A; --accent-soft: rgba(255, 69, 58, 0.10); --wave-bg: rgba(255, 69, 58, 0.08);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .eyebrow { color: var(--accent); }
+
+  /* Nav */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 24px; max-width: 960px; margin: 0 auto;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .name { font-weight: 700; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .mark { width: 34px; height: 34px; display: block; border-radius: 9px; }
+  .req-chip {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 12px; white-space: nowrap;
+  }
+
+  /* Hero */
+  header { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+  .hero { padding: 64px 0 0; text-align: center; }
+  h1 {
+    font-size: clamp(2.7rem, 7vw, 4.75rem);
+    line-height: 0.98; font-weight: 800; letter-spacing: -0.035em;
+    margin: 22px 0 0; text-wrap: balance;
+  }
+  .lede {
+    font-size: clamp(1.05rem, 2.2vw, 1.3rem); color: var(--muted);
+    max-width: 30ch; margin: 20px auto 0; text-wrap: balance;
+  }
+  .gesture {
+    display: inline-flex; align-items: center; gap: 10px; margin-top: 26px;
+    font-size: 0.95rem; color: var(--text);
+  }
+  .key {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem;
+    border: 1px solid var(--line); background: var(--surface-2);
+    border-radius: 8px; padding: 5px 10px; color: var(--text);
+  }
+  .wave-band {
+    margin-top: 40px; height: 132px; width: 100%;
+    background: linear-gradient(180deg, transparent, var(--wave-bg));
+    display: block;
+  }
+  #wave { width: 100%; height: 132px; display: block; }
+
+  /* Sections */
+  section { padding: 72px 0; border-bottom: 1px solid var(--line); }
+  .sec-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 34px; }
+  h2 { font-size: clamp(1.5rem, 3vw, 2.05rem); font-weight: 700; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+  .sec-sub { color: var(--muted); max-width: 58ch; margin: 0; }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .card { background: var(--surface); padding: 26px 24px; display: flex; flex-direction: column; gap: 9px; }
+  .card h3 { margin: 0; font-size: 1.08rem; font-weight: 650; letter-spacing: -0.01em; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .card .tick { width: 22px; height: 22px; color: var(--accent); margin-bottom: 4px; }
+
+  /* Spec strip */
+  .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .spec { background: var(--surface); padding: 24px; }
+  .spec .num { font-size: 1.9rem; font-weight: 750; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .spec .lbl { margin-top: 4px; }
+
+  /* Install steps */
+  ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  ol.steps li {
+    counter-increment: step; display: grid; grid-template-columns: 56px 1fr; gap: 18px;
+    align-items: baseline; padding: 22px 4px; border-top: 1px solid var(--line);
+  }
+  ol.steps li:first-child { border-top: none; }
+  ol.steps li::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 1.1rem; font-weight: 600;
+    color: var(--accent); font-variant-numeric: tabular-nums;
+  }
+  .step-t { font-weight: 600; font-size: 1.05rem; }
+  .step-d { color: var(--muted); font-size: 0.95rem; margin-top: 3px; }
+  .step-d code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+  }
+  .note { margin-top: 30px; padding: 18px 20px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; background: var(--surface); color: var(--muted); font-size: 0.92rem; }
+  .note strong { color: var(--text); font-weight: 600; }
+
+  footer { padding: 48px 0 64px; text-align: center; }
+  footer .mono { display: block; line-height: 2; }
+
+  @media (max-width: 560px) {
+    nav .req-chip { display: none; }
+    ol.steps li { grid-template-columns: 40px 1fr; gap: 14px; }
+    section { padding: 56px 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<nav>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+      <rect x="4" y="4" width="92" height="92" rx="26" fill="var(--surface-2)" stroke="var(--line)"/>
+      <path d="M14 50 C24 50 27 33 37 33 S50 67 57 67 S69 37 78 37 88 50 92 50"
+            fill="none" stroke="var(--accent)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="name">FreeSpeech</span>
+  </div>
+  <span class="req-chip">Apple Silicon · macOS 26</span>
+</nav>
+
+<header>
+  <div class="wrap hero">
+    <div class="mono eyebrow">Local voice dictation for macOS</div>
+    <h1>Dictate anywhere.<br>Nothing leaves your Mac.</h1>
+    <p class="lede">Hold a key, speak, and your words appear wherever the cursor is — transcribed entirely on-device.</p>
+    <div class="gesture">
+      <span class="key">Right Option</span>
+      <span style="color: var(--muted)">hold, speak, release</span>
+    </div>
+  </div>
+  <div class="wave-band"><canvas id="wave" aria-hidden="true"></canvas></div>
+</header>
+
+<main>
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="mono eyebrow">What it does</div>
+        <h2>Fast, private, and it stays out of your way.</h2>
+        <p class="sec-sub">A menu-bar app built on a local Whisper model. No cloud, no account, no telemetry — the only time it touches the network is to download its model once.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v9"/><path d="M8 5v3M16 5v3"/><rect x="9" y="12" width="6" height="9" rx="3"/></svg>
+          <h3>Talk anywhere</h3>
+          <p>Hold your hotkey in any app — Notes, a browser, Slack, your terminal — and the text lands at the cursor.</p>
+        </div>
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/></svg>
+          <h3>Nothing leaves your Mac</h3>
+          <p>Speech is transcribed on-device with Metal acceleration. Fully offline once the model is installed.</p>
+        </div>
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10"/><path d="M4 12h16"/><path d="M4 17h7"/><path d="M17 15l3 2-3 2"/></svg>
+          <h3>Continue, don't repeat</h3>
+          <p>It reads the field first — if you already typed the start of a sentence, it picks up from there instead of duplicating.</p>
+        </div>
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0116 0"/><path d="M4 12v3M20 12v3"/><path d="M8 14c0 2-1 3-2 3M16 14c0 2 1 3 2 3"/></svg>
+          <h3>Catch both sides of a call</h3>
+          <p>A separate hotkey transcribes system audio — the other person on a Zoom or Meet call — straight into your notes.</p>
+        </div>
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18l5-5 3 3 8-8"/><path d="M15 8h5v5"/></svg>
+          <h3>Cleans up as you go</h3>
+          <p>Deterministic tidy-up by default; optional on-device grammar, structure, and tone rewrites when you want them.</p>
+        </div>
+        <div class="card">
+          <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 100 18"/><path d="M12 3a5 5 0 010 10"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+          <h3>Learns your words</h3>
+          <p>Watches how you edit inserted text and quietly fixes recurring mis-hears — names, jargon, product terms.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="mono eyebrow">By the numbers</div>
+        <h2>Tuned to feel instant.</h2>
+        <p class="sec-sub">Benchmarked on Apple Silicon with the recommended model, greedy decode and a vocabulary hint.</p>
+      </div>
+      <div class="specs">
+        <div class="spec"><div class="num">~0.6s</div><div class="mono lbl">Transcribe 23s clip</div></div>
+        <div class="spec"><div class="num">&lt;2s</div><div class="mono lbl">Speak to inserted</div></div>
+        <div class="spec"><div class="num">100%</div><div class="mono lbl">On device</div></div>
+        <div class="spec"><div class="num">0</div><div class="mono lbl">Accounts or cloud</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="mono eyebrow">Install · about a minute</div>
+        <h2>Getting set up.</h2>
+        <p class="sec-sub">You were sent a zip. Requires an Apple Silicon Mac on macOS 26 or newer.</p>
+      </div>
+      <ol class="steps">
+        <li><div><div class="step-t">Unzip the file</div><div class="step-d">Double-click the zip you were sent to expand it.</div></div></li>
+        <li><div><div class="step-t">Right-click <code>install.command</code> → Open</div><div class="step-d">Not a double-click. macOS asks once to confirm an unidentified developer — click Open. It installs the app and launches it.</div></div></li>
+        <li><div><div class="step-t">Grant Microphone &amp; Accessibility</div><div class="step-d">The setup guide walks you through both. They let FreeSpeech hear you and type for you — nothing leaves your Mac.</div></div></li>
+        <li><div><div class="step-t">Hold Right Option and talk</div><div class="step-d">Anywhere. FreeSpeech lives in your menu bar for settings, models, and the system-audio hotkey.</div></div></li>
+      </ol>
+      <div class="note"><strong>First launch downloads the model once</strong> — about 550&nbsp;MB, over the internet. After that it runs completely offline. If <code>install.command</code> won't open, drag it into Terminal and press Return.</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">FreeSpeech</span>
+    <span class="mono" style="color: var(--faint)">Local voice dictation · Runs entirely on your Mac · Apple Silicon, macOS 26+</span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var canvas = document.getElementById('wave');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function accent() {
+      return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#FF453A';
+    }
+    function size() {
+      var w = canvas.clientWidth, h = canvas.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    size();
+    window.addEventListener('resize', size);
+
+    // A single reactive line — the app's identity — as layered smooth waves.
+    function draw(t) {
+      var w = canvas.clientWidth, h = canvas.clientHeight, mid = h / 2;
+      ctx.clearRect(0, 0, w, h);
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = accent();
+      ctx.beginPath();
+      for (var x = 0; x <= w; x += 2) {
+        var p = x / w;
+        // Amplitude tapers toward the edges so the line resolves flat at both ends.
+        var env = Math.sin(p * Math.PI);
+        var y = mid
+          + Math.sin(p * 11 + t * 1.7) * 20 * env
+          + Math.sin(p * 23 - t * 2.3) * 9 * env
+          + Math.sin(p * 5 + t * 0.9) * 6 * env;
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    if (reduce) { draw(0); return; }
+    var start = null;
+    function frame(ts) {
+      if (start === null) start = ts;
+      draw((ts - start) / 1000);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+</body>
+</html>
