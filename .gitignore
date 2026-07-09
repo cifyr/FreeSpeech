@@ -1,0 +1,8 @@
+.build/
+.archive/
+dist/
+vendor/
+Sources/CWhisper/include/*
+!Sources/CWhisper/include/whisper_shim.h
+*.log
+.DS_Store

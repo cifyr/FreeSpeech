@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>FreeSpeech</string>
+	<key>CFBundleDisplayName</key>
+	<string>FreeSpeech</string>
+	<key>CFBundleExecutable</key>
+	<string>FreeSpeech</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cadenwarren.freespeech</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FreeSpeech records from your microphone only while the dictation hotkey is held, and transcribes entirely on this Mac. Audio never leaves the machine.</string>
+</dict>
+</plist>

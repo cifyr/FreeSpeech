@@ -1,0 +1,23 @@
+import Foundation
+
+// Deterministic cleanup only — no LLM, no reflow. Returns nil when there is no real speech.
+public enum TranscriptCleaner {
+    // Non-speech markers whisper emits for silence/noise, e.g. [BLANK_AUDIO], (wind blowing).
+    private static let markerPattern = try! NSRegularExpression(
+        pattern: #"\[[^\]]*\]|\([^)]*\)|♪+"#)
+
+    public static func clean(_ raw: String) -> String? {
+        let ns = raw as NSString
+        var text = markerPattern.stringByReplacingMatches(
+            in: raw, range: NSRange(location: 0, length: ns.length), withTemplate: " ")
+        text = text.replacingOccurrences(
+            of: #"\s+"#, with: " ", options: .regularExpression)
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        if let first = text.first, first.isLowercase {
+            text = first.uppercased() + text.dropFirst()
+        }
+        return text
+    }
+}
