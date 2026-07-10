@@ -9,10 +9,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let languageModelAvailable: Bool
     var onSettingsChanged: (() -> Void)?
     var onOpenSettings: (() -> Void)?
-    var onOpenOnboarding: (() -> Void)?
     var onOpenHistory: (() -> Void)?
     var onUndoLastDictation: (() -> Void)?
-    var onCheckForUpdates: (() -> Void)?
 
     private var currentState: DictationState = .idle
     private var statusLine: String = "Idle"
@@ -144,17 +142,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
-        let onboardingItem = NSMenuItem(
-            title: "Setup Guide\u{2026}", action: #selector(openOnboarding), keyEquivalent: "")
-        onboardingItem.target = self
-        menu.addItem(onboardingItem)
-        let logItem = NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: "")
-        logItem.target = self
-        menu.addItem(logItem)
-        let updatesItem = NSMenuItem(
-            title: "Check for Updates\u{2026}", action: #selector(checkForUpdates), keyEquivalent: "")
-        updatesItem.target = self
-        menu.addItem(updatesItem)
         let quit = NSMenuItem(title: "Quit FreeSpeech", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -200,18 +187,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func undoLastDictation() {
         onUndoLastDictation?()
-    }
-
-    @objc private func checkForUpdates() {
-        onCheckForUpdates?()
-    }
-
-    @objc private func openOnboarding() {
-        onOpenOnboarding?()
-    }
-
-    @objc private func openLog() {
-        NSWorkspace.shared.open(AppPaths.logFile)
     }
 
     @objc private func quitApp() {

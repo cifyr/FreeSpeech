@@ -62,11 +62,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onModelChanged: { self.applySettings() })
         }
         statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
-        statusBar.onCheckForUpdates = { [weak self] in
-            guard let self else { return }
-            self.settingsWindow.show(tab: .general)
-            self.updateManager.check()
-        }
         onboardingWindow = OnboardingWindowController { [weak self] close in
             guard let self else { fatalError("onboarding store requested after teardown") }
             let store = OnboardingStore(settings: self.settings, deps: OnboardingDeps(
@@ -85,7 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.onboardingStore = store
             return store
         }
-        statusBar.onOpenOnboarding = { [weak self] in self?.onboardingWindow.show() }
         historyWindow = HistoryWindowController { [weak self] in
             guard let self else { fatalError("history model requested after teardown") }
             return HistoryViewModel(store: self.historyStore) { text in
