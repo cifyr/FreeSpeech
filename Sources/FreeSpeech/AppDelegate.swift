@@ -415,21 +415,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     && self.settings.splitSpeakersEnabled
                     && self.ensureDiarizerLoaded()
                 if splitSpeakers {
-                    // Two passes: the accurate model for text, tinydiarize only
-                    // for the times where the voice changes.
+                    // Two passes: the accurate model for word-timestamped text,
+                    // tinydiarize only for the times where the voice changes.
                     let segments = try self.engine.transcribeSegments(
                         samples: samples, timeout: Self.transcriptionTimeout,
                         beamSize: 1, vocabularyHint: hint,
-                        language: self.settings.language, detectSpeakerTurns: false)
+                        language: self.settings.language,
+                        detectSpeakerTurns: false, tokenTimestamps: true)
                     let turnSegments = try self.diarizer.transcribeSegments(
                         samples: samples, timeout: Self.transcriptionTimeout,
                         beamSize: 1, vocabularyHint: nil,
-                        language: "en", detectSpeakerTurns: true)
+                        language: "en", detectSpeakerTurns: true, tokenTimestamps: false)
                     let turns = turnSegments.filter(\.speakerTurnNext).map(\.end)
-                    Log.info("speaker split: \(turns.count) turn(s) detected across \(segments.count) segments")
-                    raw = SpeakerSplitter.merged(
-                        segments: segments.map { TimedSegment(start: $0.start, text: $0.text) },
-                        turnTimes: turns)
+                    let pieces = segments.flatMap(\.tokens)
+                        .map { TimedSegment(start: $0.start, text: $0.text) }
+                    Log.info("speaker split: \(turns.count) turn(s) detected across \(pieces.count) words")
+                    raw = SpeakerSplitter.merged(pieces: pieces, turnTimes: turns)
                 } else {
                     raw = try self.engine.transcribe(
                         samples: samples, timeout: Self.transcriptionTimeout,

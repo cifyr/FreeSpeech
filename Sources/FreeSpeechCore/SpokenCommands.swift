@@ -48,8 +48,10 @@ public enum SpokenCommands {
 
 // Filler removal is separate from commands so each has its own toggle.
 public enum FillerWords {
+    // Trailing whitespace match excludes newlines: those are speaker turns in
+    // split transcripts and must survive a filler sitting at the end of a line.
     private static let pattern = try! NSRegularExpression(
-        pattern: #"(?i)\b(um+|uh+|uhm+|erm+|mm-?hmm?)\b[,.]?\s*"#)
+        pattern: #"(?i)\b(um+|uh+|uhm+|erm+|mm-?hmm?)\b[,.]?[ \t]*"#)
 
     public static func strip(_ text: String) -> String {
         let stripped = pattern.stringByReplacingMatches(

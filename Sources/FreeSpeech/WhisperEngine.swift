@@ -25,12 +25,21 @@ enum TranscriptionError: LocalizedError {
     }
 }
 
+struct EngineToken {
+    let start: Double
+    // Raw whisper text piece: leading space marks a word boundary; pieces
+    // concatenate verbatim to reconstruct the transcript.
+    let text: String
+}
+
 struct EngineSegment {
     let start: Double
     let end: Double
     let text: String
     // Only meaningful when the loaded model supports tinydiarize (small.en-tdrz).
     let speakerTurnNext: Bool
+    // Populated only when tokenTimestamps was requested.
+    let tokens: [EngineToken]
 }
 
 // Small interface so the engine can be swapped without touching capture/insert code.
@@ -38,7 +47,7 @@ protocol TranscriptionEngine: AnyObject {
     var isLoaded: Bool { get }
     func loadModel(at url: URL) throws
     func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String) throws -> String
-    func transcribeSegments(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String, detectSpeakerTurns: Bool) throws -> [EngineSegment]
+    func transcribeSegments(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String, detectSpeakerTurns: Bool, tokenTimestamps: Bool) throws -> [EngineSegment]
 }
 
 private final class AbortBox {
@@ -79,11 +88,12 @@ final class WhisperCppEngine: TranscriptionEngine {
     func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String) throws -> String {
         try transcribeSegments(
             samples: samples, timeout: timeout, beamSize: beamSize,
-            vocabularyHint: vocabularyHint, language: language, detectSpeakerTurns: false)
+            vocabularyHint: vocabularyHint, language: language,
+            detectSpeakerTurns: false, tokenTimestamps: false)
             .map(\.text).joined()
     }
 
-    func transcribeSegments(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String, detectSpeakerTurns: Bool) throws -> [EngineSegment] {
+    func transcribeSegments(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String, detectSpeakerTurns: Bool, tokenTimestamps: Bool) throws -> [EngineSegment] {
         guard let ctx else { throw TranscriptionError.notLoaded }
 
         // whisper.cpp requires at least ~1s of audio; pad short clips with silence.
@@ -106,6 +116,7 @@ final class WhisperCppEngine: TranscriptionEngine {
         params.no_context = true
         params.suppress_blank = true
         params.tdrz_enable = detectSpeakerTurns
+        params.token_timestamps = tokenTimestamps
         params.n_threads = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount)))
 
         // Vocabulary bias: whisper conditions its decoder on this as if it preceded
@@ -142,15 +153,28 @@ final class WhisperCppEngine: TranscriptionEngine {
         }
 
         var segments: [EngineSegment] = []
+        let eot = whisper_token_eot(ctx)
         for i in 0..<whisper_full_n_segments(ctx) {
             guard let seg = whisper_full_get_segment_text(ctx, i) else { continue }
+            var tokens: [EngineToken] = []
+            if tokenTimestamps {
+                for j in 0..<whisper_full_n_tokens(ctx, i) {
+                    // Special tokens (timestamps, EOT, ...) are all >= EOT.
+                    guard whisper_full_get_token_id(ctx, i, j) < eot,
+                          let piece = whisper_full_get_token_text(ctx, i, j) else { continue }
+                    let data = whisper_full_get_token_data(ctx, i, j)
+                    tokens.append(EngineToken(
+                        start: Double(data.t0) / 100.0, text: String(cString: piece)))
+                }
+            }
             // Segment timestamps are in centiseconds.
             segments.append(EngineSegment(
                 start: Double(whisper_full_get_segment_t0(ctx, i)) / 100.0,
                 end: Double(whisper_full_get_segment_t1(ctx, i)) / 100.0,
                 text: String(cString: seg),
                 speakerTurnNext: detectSpeakerTurns
-                    && whisper_full_get_segment_speaker_turn_next(ctx, i)))
+                    && whisper_full_get_segment_speaker_turn_next(ctx, i),
+                tokens: tokens))
         }
         Log.info(String(format: "transcription done in %.2fs (%d segments): \"%@\"",
                         elapsed, segments.count, segments.map(\.text).joined()))

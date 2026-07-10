@@ -57,14 +57,15 @@ enum TranscribeFileCommand {
                 let segments = try engine.transcribeSegments(
                     samples: samples, timeout: 120, beamSize: beamSize,
                     vocabularyHint: vocabularyHint, language: language,
-                    detectSpeakerTurns: false)
+                    detectSpeakerTurns: false, tokenTimestamps: true)
                 let diarizer = WhisperCppEngine()
                 let turnStart = CFAbsoluteTimeGetCurrent()
                 try diarizer.loadModel(
                     at: AppPaths.modelFile(named: Settings.diarizerModelName))
                 let turnSegments = try diarizer.transcribeSegments(
                     samples: samples, timeout: 120, beamSize: 1,
-                    vocabularyHint: nil, language: "en", detectSpeakerTurns: true)
+                    vocabularyHint: nil, language: "en",
+                    detectSpeakerTurns: true, tokenTimestamps: false)
                 let turns = turnSegments.filter(\.speakerTurnNext).map(\.end)
                 print(String(format: "diarize_pass_s: %.3f", CFAbsoluteTimeGetCurrent() - turnStart))
                 for s in turnSegments {
@@ -72,9 +73,10 @@ enum TranscribeFileCommand {
                                  s.start, s.end, s.speakerTurnNext ? "YES" : "no", s.text))
                 }
                 print("turns: \(turns.map { String(format: "%.2f", $0) }.joined(separator: ", "))")
-                cleaned = TranscriptCleaner.cleanPreservingLines(SpeakerSplitter.merged(
-                    segments: segments.map { TimedSegment(start: $0.start, text: $0.text) },
-                    turnTimes: turns)) ?? ""
+                let pieces = segments.flatMap(\.tokens)
+                    .map { TimedSegment(start: $0.start, text: $0.text) }
+                cleaned = TranscriptCleaner.cleanPreservingLines(
+                    SpeakerSplitter.merged(pieces: pieces, turnTimes: turns)) ?? ""
             }
             print("model: \(modelName)")
             print("beam_size: \(beamSize)")
