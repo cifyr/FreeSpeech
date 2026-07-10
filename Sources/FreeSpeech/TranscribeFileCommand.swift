@@ -27,6 +27,10 @@ enum TranscribeFileCommand {
         if let i = arguments.firstIndex(of: "--prompt"), arguments.count > i + 1 {
             vocabularyHint = arguments[i + 1]
         }
+        var language = "en"
+        if let i = arguments.firstIndex(of: "--language"), arguments.count > i + 1 {
+            language = arguments[i + 1]
+        }
 
         do {
             let samples = try loadSamples(path: path)
@@ -43,7 +47,7 @@ enum TranscribeFileCommand {
                 let start = CFAbsoluteTimeGetCurrent()
                 raw = try engine.transcribe(
                     samples: samples, timeout: 120, beamSize: beamSize,
-                    vocabularyHint: vocabularyHint)
+                    vocabularyHint: vocabularyHint, language: language)
                 best = min(best, CFAbsoluteTimeGetCurrent() - start)
             }
 

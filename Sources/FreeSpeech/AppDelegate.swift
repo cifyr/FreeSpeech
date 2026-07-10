@@ -16,7 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let modelDownloader = ModelDownloader()
     private weak var onboardingStore: OnboardingStore?
     private let learningStore = LearningStore(fileURL: AppPaths.learningFile)
+    private let historyStore = HistoryStore(fileURL: AppPaths.historyFile)
     private lazy var editWatcher = EditWatcher(store: learningStore)
+    private var historyWindow: HistoryWindowController!
+    // Frontmost app when recording started: drives the per-app rewrite profile.
+    private var pendingTargetBundleID: String?
     private var hud: HUDController!
     private var statusBar: StatusBarController!
     private var settingsWindow: SettingsWindowController!
@@ -75,6 +79,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return store
         }
         statusBar.onOpenOnboarding = { [weak self] in self?.onboardingWindow.show() }
+        historyWindow = HistoryWindowController { [weak self] in
+            guard let self else { fatalError("history model requested after teardown") }
+            return HistoryViewModel(store: self.historyStore) { text in
+                // Hide our window first so the paste lands in the user's app.
+                self.historyWindow.hide()
+                NSApp.hide(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    do {
+                        try self.inserter.insert(text, copyToClipboard: self.settings.copyToClipboard)
+                    } catch {
+                        Log.error("history re-insert failed: \(error.localizedDescription)")
+                        self.hud.show(.error(error.localizedDescription))
+                    }
+                }
+            }
+        }
+        statusBar.onOpenHistory = { [weak self] in self?.historyWindow.show() }
+        statusBar.onUndoLastDictation = { [weak self] in
+            guard let self else { return }
+            do {
+                try self.inserter.undoLastInsertion()
+            } catch {
+                Log.error("undo failed: \(error.localizedDescription)")
+                self.hud.show(.error(error.localizedDescription))
+            }
+        }
+        hud.hudPosition = settings.hudPosition
 
         let onMaxDuration: () -> Void = { [weak self] in
             guard let self else { return }
@@ -219,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applySettings() {
         installHotkey()
+        hud.hudPosition = settings.hudPosition
         if AppPaths.modelFile(named: settings.modelName).path != loadedModelPath {
             loadModel()
         }
@@ -251,7 +283,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRecording(source: AudioSource) {
         activeSource = source
+        pendingTargetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         captureScreenContext()
+        SoundCues.play(.start, enabled: settings.soundCuesEnabled)
         switch source {
         case .microphone:
             guard Permissions.microphoneAuthorized() else {
@@ -341,15 +375,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let raw = try self.engine.transcribe(
                     samples: samples, timeout: Self.transcriptionTimeout,
-                    beamSize: 1, vocabularyHint: hint)
-                let mode = self.settings.postProcessing
+                    beamSize: 1, vocabularyHint: hint, language: self.settings.language)
+                // Per-app profile: the app being dictated into can override the mode.
+                let mode = self.settings.postProcessing(forApp: self.pendingTargetBundleID)
                 // "Do nothing" means raw whisper output, only trimmed so pasting is sane.
                 var text: String? = mode == .off
                     ? raw.trimmingCharacters(in: .whitespacesAndNewlines)
                     : TranscriptCleaner.clean(raw)
                 if let t = text, mode != .off {
-                    // Learned corrections are deterministic and effectively free.
-                    text = self.learningStore.apply(to: t)
+                    // Deterministic transforms, all effectively free: learned rules,
+                    // the user's dictionary, filler removal, then spoken commands
+                    // (so "scratch that" sees the final wording).
+                    var transformed = self.learningStore.apply(to: t)
+                    transformed = TextReplacements.apply(
+                        rules: self.settings.customReplacements, to: transformed)
+                    if self.settings.fillerStrippingEnabled {
+                        transformed = FillerWords.strip(transformed)
+                    }
+                    if self.settings.spokenCommandsEnabled {
+                        transformed = SpokenCommands.apply(to: transformed)
+                    }
+                    text = transformed
                 }
                 if text?.isEmpty == true { text = nil }
                 if let cleaned = text, mode.needsLanguageModel {
@@ -379,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let transcript else {
             hud.show(.error("No speech detected"))
+            SoundCues.play(.error, enabled: settings.soundCuesEnabled)
             _ = machine.handle(.transcriptionSucceeded, mode: settings.mode)
             statusBar.update(state: machine.state)
             return
@@ -391,6 +438,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 hud.show(.error("Nothing new to insert"))
             } else {
                 hud.show(.success)
+                SoundCues.play(.inserted, enabled: settings.soundCuesEnabled)
+                if settings.historyEnabled {
+                    historyStore.append(HistoryEntry(
+                        timestamp: Date(),
+                        text: inserted,
+                        appName: NSWorkspace.shared.frontmostApplication?.localizedName ?? "unknown",
+                        source: activeSource.rawValue))
+                }
             }
             perform(machine.handle(.transcriptionSucceeded, mode: settings.mode))
             if settings.learningEnabled, !inserted.isEmpty {
@@ -398,6 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             Log.error("insertion failed: \(error.localizedDescription)")
+            SoundCues.play(.error, enabled: settings.soundCuesEnabled)
             perform(machine.handle(.transcriptionFailed(error.localizedDescription), mode: settings.mode))
         }
     }

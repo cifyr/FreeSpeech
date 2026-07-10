@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import FreeSpeechCore
 
@@ -46,6 +47,22 @@ final class SettingsStore: ObservableObject {
     @Published var learningEnabled: Bool { didSet { settings.learningEnabled = learningEnabled } }
     @Published var screenContextEnabled: Bool { didSet { settings.screenContextEnabled = screenContextEnabled } }
     @Published var learnedSummary: String = ""
+    @Published var spokenCommandsEnabled: Bool { didSet { settings.spokenCommandsEnabled = spokenCommandsEnabled } }
+    @Published var fillerStrippingEnabled: Bool { didSet { settings.fillerStrippingEnabled = fillerStrippingEnabled } }
+    @Published var historyEnabled: Bool { didSet { settings.historyEnabled = historyEnabled } }
+    @Published var language: String { didSet { settings.language = language } }
+    @Published var soundCuesEnabled: Bool { didSet { settings.soundCuesEnabled = soundCuesEnabled } }
+    @Published var hudPosition: HUDPosition {
+        didSet {
+            settings.hudPosition = hudPosition
+            onModelChanged()  // applySettings pushes the position to the HUD
+        }
+    }
+    @Published var replacements: [(from: String, to: String)] = []
+    @Published var newReplacementFrom: String = ""
+    @Published var newReplacementTo: String = ""
+    @Published var appProfiles: [(bundleID: String, appName: String, mode: PostProcessingMode)] = []
+    @Published var launchAtLogin: Bool = false
 
     let languageModelAvailable: Bool
 
@@ -68,6 +85,12 @@ final class SettingsStore: ObservableObject {
         _micPriority = Published(initialValue: settings.micPriority)
         _learningEnabled = Published(initialValue: settings.learningEnabled)
         _screenContextEnabled = Published(initialValue: settings.screenContextEnabled)
+        _spokenCommandsEnabled = Published(initialValue: settings.spokenCommandsEnabled)
+        _fillerStrippingEnabled = Published(initialValue: settings.fillerStrippingEnabled)
+        _historyEnabled = Published(initialValue: settings.historyEnabled)
+        _language = Published(initialValue: settings.language)
+        _soundCuesEnabled = Published(initialValue: settings.soundCuesEnabled)
+        _hudPosition = Published(initialValue: settings.hudPosition)
         refresh()
     }
 
@@ -78,6 +101,76 @@ final class SettingsStore: ObservableObject {
         let prioritized = micPriority.compactMap { uid in connected.first { $0.uid == uid } }
         connectedMics = prioritized + connected.filter { d in !micPriority.contains(d.uid) }
         refreshLearnedSummary()
+        replacements = settings.customReplacements
+        refreshAppProfiles()
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    // MARK: - Custom replacement dictionary
+
+    func addReplacement() {
+        let from = newReplacementFrom.trimmingCharacters(in: .whitespaces)
+        let to = newReplacementTo.trimmingCharacters(in: .whitespaces)
+        guard !from.isEmpty, !to.isEmpty else { return }
+        var rules = settings.customReplacements.filter { $0.from.lowercased() != from.lowercased() }
+        rules.append((from: from, to: to))
+        settings.customReplacements = rules
+        Log.info("replacement added: \"\(from)\" -> \"\(to)\"")
+        newReplacementFrom = ""
+        newReplacementTo = ""
+        replacements = rules
+    }
+
+    func removeReplacement(from: String) {
+        settings.customReplacements = settings.customReplacements.filter { $0.from != from }
+        replacements = settings.customReplacements
+        Log.info("replacement removed: \"\(from)\"")
+    }
+
+    // MARK: - Per-app profiles
+
+    var runningApps: [(bundleID: String, name: String)] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app in
+                guard let id = app.bundleIdentifier, let name = app.localizedName else { return nil }
+                return (bundleID: id, name: name)
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    func setProfile(bundleID: String, mode: PostProcessingMode?) {
+        var profiles = settings.appProfiles
+        profiles[bundleID] = mode?.rawValue
+        settings.appProfiles = profiles
+        Log.info("app profile: \(bundleID) -> \(mode?.rawValue ?? "removed")")
+        refreshAppProfiles()
+    }
+
+    private func refreshAppProfiles() {
+        let running = Dictionary(
+            uniqueKeysWithValues: runningApps.map { ($0.bundleID, $0.name) })
+        appProfiles = settings.appProfiles.compactMap { bundleID, raw in
+            guard let mode = PostProcessingMode(rawValue: raw) else { return nil }
+            return (bundleID: bundleID, appName: running[bundleID] ?? bundleID, mode: mode)
+        }.sorted { $0.appName < $1.appName }
+    }
+
+    // MARK: - Launch at login
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+            Log.info("launch at login set to \(launchAtLogin)")
+        } catch {
+            Log.error("launch at login change failed: \(error.localizedDescription)")
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 
     // nil = system default input (no priority set or none of them connected).
@@ -340,6 +433,168 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+                card {
+                    sectionLabel("Dictation")
+                    HStack {
+                        Text("Spoken commands")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        chip(store.spokenCommandsEnabled ? "On" : "Off", selected: store.spokenCommandsEnabled) {
+                            store.spokenCommandsEnabled.toggle()
+                        }
+                    }
+                    Text("\"new line\", \"new paragraph\" become breaks; \"scratch that\" discards what you said before it.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    HStack {
+                        Text("Strip filler words")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        chip(store.fillerStrippingEnabled ? "On" : "Off", selected: store.fillerStrippingEnabled) {
+                            store.fillerStrippingEnabled.toggle()
+                        }
+                    }
+                    Text("Removes um, uh, erm before inserting.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    HStack {
+                        Text("Language")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        Picker("", selection: $store.language) {
+                            ForEach(TranscriptionLanguage.options, id: \.code) { option in
+                                Text(option.name).tag(option.code)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 160)
+                    }
+                    Text("Auto-detect and non-English need a multilingual model (the default large-v3-turbo works; \".en\" models are English-only).")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                card {
+                    sectionLabel("Replacement dictionary")
+                    ForEach(store.replacements, id: \.from) { rule in
+                        HStack(spacing: 8) {
+                            Text(rule.from)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(Color.dsMuted)
+                            Text("\u{2192}")
+                                .foregroundStyle(Color.dsFaint)
+                            Text(rule.to)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(Color.dsPaper)
+                            Spacer()
+                            Button {
+                                store.removeReplacement(from: rule.from)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.dsMuted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    HStack(spacing: 8) {
+                        settingsField("heard as", text: $store.newReplacementFrom)
+                        Text("\u{2192}").foregroundStyle(Color.dsFaint)
+                        settingsField("replace with", text: $store.newReplacementTo)
+                        Button("Add") { store.addReplacement() }
+                            .buttonStyle(GhostButtonStyle())
+                    }
+                    Text("Always-on corrections of your own, applied on word boundaries alongside the auto-learned ones.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                card {
+                    sectionLabel("Per-app rewrite")
+                    ForEach(store.appProfiles, id: \.bundleID) { profile in
+                        HStack(spacing: 8) {
+                            Text(profile.appName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.dsPaper)
+                            Spacer()
+                            Text(profile.mode.displayName.uppercased())
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .kerning(1.0)
+                                .foregroundStyle(Color.dsAccent)
+                            Button {
+                                store.setProfile(bundleID: profile.bundleID, mode: nil)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.dsMuted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    Menu("Add rule for an open app\u{2026}") {
+                        ForEach(store.runningApps, id: \.bundleID) { app in
+                            Menu(app.name) {
+                                ForEach(PostProcessingMode.allCases, id: \.self) { mode in
+                                    Button(mode.displayName) {
+                                        store.setProfile(bundleID: app.bundleID, mode: mode)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.dsPaper)
+                    .frame(maxWidth: 260)
+                    Text("Overrides the rewrite mode when dictating into that app, e.g. grammar fixes in Mail but raw text in the terminal.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                card {
+                    sectionLabel("Feedback and system")
+                    HStack {
+                        Text("Sound cues")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        chip(store.soundCuesEnabled ? "On" : "Off", selected: store.soundCuesEnabled) {
+                            store.soundCuesEnabled.toggle()
+                        }
+                    }
+                    HStack {
+                        Text("Save history")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        chip(store.historyEnabled ? "On" : "Off", selected: store.historyEnabled) {
+                            store.historyEnabled.toggle()
+                        }
+                    }
+                    Text("Local transcript history, browsable from the menu bar.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    HStack {
+                        Text("Launch at login")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.dsPaper)
+                        Spacer()
+                        chip(store.launchAtLogin ? "On" : "Off", selected: store.launchAtLogin) {
+                            store.setLaunchAtLogin(!store.launchAtLogin)
+                        }
+                    }
+                    Divider().overlay(Color.dsLine).padding(.vertical, 4)
+                    sectionLabel("HUD position")
+                    HStack(spacing: 8) {
+                        ForEach(HUDPosition.allCases, id: \.self) { position in
+                            chip(position.displayName, selected: store.hudPosition == position) {
+                                store.hudPosition = position
+                            }
+                        }
+                    }
+                }
             }
             .padding(20)
         }
@@ -395,6 +650,19 @@ struct SettingsView: View {
             .buttonStyle(GhostButtonStyle())
             Spacer()
         }
+    }
+
+    private func settingsField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .foregroundStyle(Color.dsPaper)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                    .strokeBorder(Color.dsLine, lineWidth: 1))
     }
 
     private func tag(_ text: String, color: Color) -> some View {

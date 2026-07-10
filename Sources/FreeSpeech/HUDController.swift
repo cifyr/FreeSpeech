@@ -23,6 +23,7 @@ final class HUDController {
     private static let size = NSSize(width: 280, height: 44)
 
     var onAutoDismiss: (() -> Void)?
+    var hudPosition: HUDPosition = .bottomCenter
 
     init() {
         panel = NSPanel(
@@ -171,9 +172,18 @@ final class HUDController {
     private func position() {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let frame = screen.visibleFrame
-        let origin = NSPoint(
-            x: frame.midX - Self.size.width / 2,
-            y: frame.minY + 120)
+        let margin: CGFloat = 24
+        let origin: NSPoint
+        switch hudPosition {
+        case .bottomCenter:
+            origin = NSPoint(x: frame.midX - Self.size.width / 2, y: frame.minY + 120)
+        case .topCenter:
+            origin = NSPoint(x: frame.midX - Self.size.width / 2, y: frame.maxY - Self.size.height - margin)
+        case .bottomLeft:
+            origin = NSPoint(x: frame.minX + margin, y: frame.minY + margin)
+        case .bottomRight:
+            origin = NSPoint(x: frame.maxX - Self.size.width - margin, y: frame.minY + margin)
+        }
         panel.setFrame(NSRect(origin: origin, size: Self.size), display: true)
     }
 }

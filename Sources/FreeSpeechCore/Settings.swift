@@ -93,6 +93,14 @@ public final class Settings {
         static let tone = "rewriteTone"
         static let vocabularyHint = "vocabularyHint"
         static let screenContextEnabled = "screenContextEnabled"
+        static let spokenCommandsEnabled = "spokenCommandsEnabled"
+        static let fillerStrippingEnabled = "fillerStrippingEnabled"
+        static let customReplacements = "customReplacements"
+        static let historyEnabled = "historyEnabled"
+        static let language = "transcriptionLanguage"
+        static let soundCuesEnabled = "soundCuesEnabled"
+        static let hudPosition = "hudPosition"
+        static let appProfiles = "appPostProcessingProfiles"
         static let onboarded = "hasCompletedOnboarding"
     }
 
@@ -162,6 +170,59 @@ public final class Settings {
         set { defaults.set(newValue, forKey: Key.screenContextEnabled) }
     }
 
+    public var spokenCommandsEnabled: Bool {
+        get { defaults.object(forKey: Key.spokenCommandsEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.spokenCommandsEnabled) }
+    }
+
+    public var fillerStrippingEnabled: Bool {
+        get { defaults.object(forKey: Key.fillerStrippingEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.fillerStrippingEnabled) }
+    }
+
+    // Ordered user dictionary, stored as [from, to] pairs to keep insertion order.
+    public var customReplacements: [(from: String, to: String)] {
+        get {
+            let raw = defaults.array(forKey: Key.customReplacements) as? [[String]] ?? []
+            return raw.compactMap { $0.count == 2 ? (from: $0[0], to: $0[1]) : nil }
+        }
+        set { defaults.set(newValue.map { [$0.from, $0.to] }, forKey: Key.customReplacements) }
+    }
+
+    public var historyEnabled: Bool {
+        get { defaults.object(forKey: Key.historyEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.historyEnabled) }
+    }
+
+    // "auto" lets whisper detect the language; .en models are English-only.
+    public var language: String {
+        get { defaults.string(forKey: Key.language) ?? "en" }
+        set { defaults.set(newValue, forKey: Key.language) }
+    }
+
+    public var soundCuesEnabled: Bool {
+        get { defaults.object(forKey: Key.soundCuesEnabled) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.soundCuesEnabled) }
+    }
+
+    public var hudPosition: HUDPosition {
+        get { defaults.string(forKey: Key.hudPosition).flatMap(HUDPosition.init) ?? .bottomCenter }
+        set { defaults.set(newValue.rawValue, forKey: Key.hudPosition) }
+    }
+
+    // Per-app override of the post-processing mode, keyed by bundle identifier.
+    public var appProfiles: [String: String] {
+        get { defaults.dictionary(forKey: Key.appProfiles) as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: Key.appProfiles) }
+    }
+
+    public func postProcessing(forApp bundleID: String?) -> PostProcessingMode {
+        guard let bundleID,
+              let raw = appProfiles[bundleID],
+              let mode = PostProcessingMode(rawValue: raw) else { return postProcessing }
+        return mode
+    }
+
     // Ordered microphone UIDs; the first one currently connected wins.
     // Empty means "system default input".
     public var micPriority: [String] {
@@ -211,6 +272,36 @@ public final class Settings {
     }
 }
 
+public enum HUDPosition: String, CaseIterable {
+    case bottomCenter
+    case topCenter
+    case bottomLeft
+    case bottomRight
+
+    public var displayName: String {
+        switch self {
+        case .bottomCenter: return "Bottom center"
+        case .topCenter: return "Top center"
+        case .bottomLeft: return "Bottom left"
+        case .bottomRight: return "Bottom right"
+        }
+    }
+}
+
+public enum TranscriptionLanguage {
+    // Small curated set; whisper accepts ISO 639-1 codes and "auto".
+    public static let options: [(code: String, name: String)] = [
+        ("en", "English"), ("auto", "Auto-detect"), ("es", "Spanish"),
+        ("fr", "French"), ("de", "German"), ("pt", "Portuguese"),
+        ("it", "Italian"), ("hi", "Hindi"), ("ja", "Japanese"),
+        ("ko", "Korean"), ("zh", "Chinese"), ("pa", "Punjabi"),
+    ]
+
+    public static func name(for code: String) -> String {
+        options.first { $0.code == code }?.name ?? code
+    }
+}
+
 public enum MicPriority {
     // First preferred device that is actually connected; nil means system default.
     public static func pick(priority: [String], connected: [String]) -> String? {
@@ -234,6 +325,9 @@ public enum AppPaths {
     }
     public static var learningFile: URL {
         appSupport.appendingPathComponent("learning.json")
+    }
+    public static var historyFile: URL {
+        appSupport.appendingPathComponent("history.jsonl")
     }
     public static func installedModels() -> [String] {
         let files = (try? FileManager.default.contentsOfDirectory(atPath: modelsDir.path)) ?? []

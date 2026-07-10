@@ -10,6 +10,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     var onSettingsChanged: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     var onOpenOnboarding: (() -> Void)?
+    var onOpenHistory: (() -> Void)?
+    var onUndoLastDictation: (() -> Void)?
 
     private var currentState: DictationState = .idle
     private var statusLine: String = "Idle"
@@ -140,6 +142,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(clipItem)
 
         menu.addItem(.separator())
+        let undoItem = NSMenuItem(
+            title: "Undo Last Dictation", action: #selector(undoLastDictation), keyEquivalent: "")
+        undoItem.target = self
+        menu.addItem(undoItem)
+        let historyItem = NSMenuItem(
+            title: "History\u{2026}", action: #selector(openHistory), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        menu.addItem(.separator())
         let settingsItem = NSMenuItem(
             title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
@@ -196,6 +208,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func openSettings() {
         onOpenSettings?()
+    }
+
+    @objc private func openHistory() {
+        onOpenHistory?()
+    }
+
+    @objc private func undoLastDictation() {
+        onUndoLastDictation?()
     }
 
     @objc private func openOnboarding() {

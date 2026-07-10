@@ -29,7 +29,7 @@ enum TranscriptionError: LocalizedError {
 protocol TranscriptionEngine: AnyObject {
     var isLoaded: Bool { get }
     func loadModel(at url: URL) throws
-    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?) throws -> String
+    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String) throws -> String
 }
 
 private final class AbortBox {
@@ -67,7 +67,7 @@ final class WhisperCppEngine: TranscriptionEngine {
         Log.info(String(format: "model load done in %.2fs", CFAbsoluteTimeGetCurrent() - started))
     }
 
-    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?) throws -> String {
+    func transcribe(samples: [Float], timeout: TimeInterval, beamSize: Int, vocabularyHint: String?, language: String) throws -> String {
         guard let ctx else { throw TranscriptionError.notLoaded }
 
         // whisper.cpp requires at least ~1s of audio; pad short clips with silence.
@@ -107,9 +107,10 @@ final class WhisperCppEngine: TranscriptionEngine {
         params.abort_callback_user_data = Unmanaged.passUnretained(abortBox).toOpaque()
 
         let started = CFAbsoluteTimeGetCurrent()
-        Log.info("transcription start: \(input.count) samples (\(String(format: "%.1f", Double(input.count) / Double(Self.sampleRate)))s), beam \(beamSize), hint \(vocabularyHint.map { "\"\($0)\"" } ?? "none")")
+        Log.info("transcription start: \(input.count) samples (\(String(format: "%.1f", Double(input.count) / Double(Self.sampleRate)))s), beam \(beamSize), language \(language), hint \(vocabularyHint.map { "\"\($0)\"" } ?? "none")")
 
-        let status: Int32 = "en".withCString { lang in
+        // whisper.cpp treats "auto" as detect-from-audio; .en models ignore it.
+        let status: Int32 = language.withCString { lang in
             params.language = lang
             return input.withUnsafeBufferPointer { buf in
                 whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))

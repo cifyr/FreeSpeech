@@ -158,16 +158,7 @@ public final class LearningStore {
 
     public func apply(to text: String) -> String {
         let promoted = queue.sync { rules.filter { $0.count >= Self.promotionThreshold } }
-        var result = text
-        for rule in promoted {
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: rule.from))\\b"
-            guard let regex = try? NSRegularExpression(
-                pattern: pattern, options: .caseInsensitive) else { continue }
-            result = regex.stringByReplacingMatches(
-                in: result, range: NSRange(result.startIndex..., in: result),
-                withTemplate: NSRegularExpression.escapedTemplate(for: rule.to))
-        }
-        return result
+        return TextReplacements.apply(rules: promoted.map { ($0.from, $0.to) }, to: text)
     }
 
     // Most-corrected target phrases, for biasing whisper toward words the user wants.
