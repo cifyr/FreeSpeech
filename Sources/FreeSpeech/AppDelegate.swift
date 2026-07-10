@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let inserter = TextInserter()
     private let postProcessor = PostProcessor()
     private let modelDownloader = ModelDownloader()
+    private let updateManager = UpdateManager()
     private weak var onboardingStore: OnboardingStore?
     private let learningStore = LearningStore(fileURL: AppPaths.learningFile)
     private let historyStore = HistoryStore(fileURL: AppPaths.historyFile)
@@ -56,10 +57,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: self.settings,
                 languageModelAvailable: self.postProcessor.languageModelAvailable,
                 learningStore: self.learningStore,
+                updates: self.updateManager,
                 onHotkeyChanged: { self.installHotkey() },
                 onModelChanged: { self.applySettings() })
         }
         statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        statusBar.onCheckForUpdates = { [weak self] in
+            guard let self else { return }
+            self.settingsWindow.show(tab: .general)
+            self.updateManager.check()
+        }
         onboardingWindow = OnboardingWindowController { [weak self] close in
             guard let self else { fatalError("onboarding store requested after teardown") }
             let store = OnboardingStore(settings: self.settings, deps: OnboardingDeps(

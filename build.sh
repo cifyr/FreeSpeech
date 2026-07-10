@@ -67,6 +67,11 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # Icon is pre-generated from assets/logo.svg (qlmanage render + iconutil) and
 # committed, so the build has no fragile SVG-rendering dependency.
 cp "$ROOT/Resources/FreeSpeech.icns" "$APP/Contents/Resources/FreeSpeech.icns"
+# Record where this build came from so the in-app updater can fetch/pull/rebuild.
+SOURCE_REV="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+plutil -replace FSSourceRevision -string "$SOURCE_REV" "$APP/Contents/Info.plist"
+plutil -replace FSSourcePath -string "$ROOT" "$APP/Contents/Info.plist"
+
 # Prefer the stable "FreeSpeech Dev" self-signed identity when present: TCC ties
 # permissions to the signing certificate, so Accessibility/Screen Recording
 # grants survive rebuilds. Ad-hoc fallback re-prompts after every rebuild.

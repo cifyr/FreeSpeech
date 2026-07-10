@@ -7,6 +7,13 @@ extension AudioInputDevice: Identifiable {
     public var id: String { uid }
 }
 
+enum SettingsTab: String, CaseIterable {
+    case general = "General"
+    case audio = "Audio"
+    case text = "Text"
+    case smarts = "Smarts"
+}
+
 final class SettingsStore: ObservableObject {
     // SwiftUI also declares a `Settings` scene type, hence the qualified name.
     private let settings: FreeSpeechCore.Settings
@@ -63,14 +70,18 @@ final class SettingsStore: ObservableObject {
     @Published var newReplacementTo: String = ""
     @Published var appProfiles: [(bundleID: String, appName: String, mode: PostProcessingMode)] = []
     @Published var launchAtLogin: Bool = false
+    @Published var selectedTab: SettingsTab = .general
+
+    let updates: UpdateManager
 
     let languageModelAvailable: Bool
 
     init(settings: FreeSpeechCore.Settings, languageModelAvailable: Bool,
-         learningStore: LearningStore,
+         learningStore: LearningStore, updates: UpdateManager,
          onHotkeyChanged: @escaping () -> Void, onModelChanged: @escaping () -> Void) {
         self.settings = settings
         self.learningStore = learningStore
+        self.updates = updates
         self.languageModelAvailable = languageModelAvailable
         self.onHotkeyChanged = onHotkeyChanged
         self.onModelChanged = onModelChanged
@@ -269,11 +280,69 @@ final class SettingsStore: ObservableObject {
 // Greenlight-styled settings: ink surfaces, hairlines, mono micro labels, red accent.
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
+    // Observed directly: the store does not republish the manager's changes.
+    @ObservedObject var updates: UpdateManager
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
                 header
+                HStack(spacing: 8) {
+                    ForEach(SettingsTab.allCases, id: \.self) { tab in
+                        chip(tab.rawValue, selected: store.selectedTab == tab) {
+                            store.selectedTab = tab
+                        }
+                    }
+                }
+            }
+            .padding([.horizontal, .top], 20)
+            .padding(.bottom, 12)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch store.selectedTab {
+                    case .general: generalTab
+                    case .audio: audioTab
+                    case .text: textTab
+                    case .smarts: smartsTab
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(width: 480, height: 640)
+        .background(Color.dsInk0)
+        .onAppear { store.refresh() }
+        .onDisappear { store.endShortcutCapture() }
+    }
+
+    @ViewBuilder private var generalTab: some View {
+        activationCard
+        feedbackCard
+        updatesCard
+    }
+
+    @ViewBuilder private var audioTab: some View {
+        micPriorityCard
+        modelCard
+        languageCard
+    }
+
+    @ViewBuilder private var textTab: some View {
+        postProcessingCard
+        dictationCard
+        clipboardCard
+        replacementCard
+        perAppCard
+    }
+
+    @ViewBuilder private var smartsTab: some View {
+        vocabularyCard
+        learningCard
+        historyCard
+    }
+
+    @ViewBuilder private var activationCard: some View {
                 card {
                     sectionLabel("Activation")
                     HStack(spacing: 8) {
@@ -291,6 +360,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var clipboardCard: some View {
                 card {
                     HStack {
                         sectionLabel("Keep transcript on clipboard")
@@ -303,6 +375,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var micPriorityCard: some View {
                 card {
                     HStack {
                         sectionLabel("Microphone priority")
@@ -347,6 +422,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var learningCard: some View {
                 card {
                     HStack {
                         sectionLabel("Learning")
@@ -364,6 +442,9 @@ struct SettingsView: View {
                     Button("Reset Learned Corrections") { store.resetLearning() }
                         .buttonStyle(GhostButtonStyle())
                 }
+    }
+
+    @ViewBuilder private var modelCard: some View {
                 card {
                     sectionLabel("Model")
                     if store.installedModels.isEmpty {
@@ -380,6 +461,9 @@ struct SettingsView: View {
                         ) { store.modelName = info.id }
                     }
                 }
+    }
+
+    @ViewBuilder private var postProcessingCard: some View {
                 card {
                     sectionLabel("Post-processing")
                     ForEach(PostProcessingMode.allCases, id: \.self) { mode in
@@ -406,6 +490,9 @@ struct SettingsView: View {
                         .padding(.top, 2)
                     }
                 }
+    }
+
+    @ViewBuilder private var vocabularyCard: some View {
                 card {
                     sectionLabel("Vocabulary")
                     TextField("Names and terms you often say", text: $store.vocabularyHint)
@@ -433,6 +520,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var dictationCard: some View {
                 card {
                     sectionLabel("Dictation")
                     HStack {
@@ -459,6 +549,12 @@ struct SettingsView: View {
                     Text("Removes um, uh, erm before inserting.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
+                }
+    }
+
+    @ViewBuilder private var languageCard: some View {
+                card {
+                    sectionLabel("Language")
                     HStack {
                         Text("Language")
                             .font(.system(size: 13, weight: .semibold))
@@ -476,6 +572,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var replacementCard: some View {
                 card {
                     sectionLabel("Replacement dictionary")
                     ForEach(store.replacements, id: \.from) { rule in
@@ -511,6 +610,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var perAppCard: some View {
                 card {
                     sectionLabel("Per-app rewrite")
                     ForEach(store.appProfiles, id: \.bundleID) { profile in
@@ -553,6 +655,9 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+    }
+
+    @ViewBuilder private var feedbackCard: some View {
                 card {
                     sectionLabel("Feedback and system")
                     HStack {
@@ -564,18 +669,6 @@ struct SettingsView: View {
                             store.soundCuesEnabled.toggle()
                         }
                     }
-                    HStack {
-                        Text("Save history")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.dsPaper)
-                        Spacer()
-                        chip(store.historyEnabled ? "On" : "Off", selected: store.historyEnabled) {
-                            store.historyEnabled.toggle()
-                        }
-                    }
-                    Text("Local transcript history, browsable from the menu bar.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dsFaint)
                     HStack {
                         Text("Launch at login")
                             .font(.system(size: 13, weight: .semibold))
@@ -595,13 +688,86 @@ struct SettingsView: View {
                         }
                     }
                 }
-            }
-            .padding(20)
+    }
+
+    @ViewBuilder private var historyCard: some View {
+                card {
+                    HStack {
+                        sectionLabel("History")
+                        Spacer()
+                        chip(store.historyEnabled ? "On" : "Off", selected: store.historyEnabled) {
+                            store.historyEnabled.toggle()
+                        }
+                    }
+                    Text("Local transcript history, browsable from the menu bar.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+    }
+
+    @ViewBuilder private var updatesCard: some View {
+                card {
+                    HStack {
+                        sectionLabel("Updates")
+                        Spacer()
+                        Text(updates.versionLine.uppercased())
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .kerning(1.0)
+                            .foregroundStyle(Color.dsFaint)
+                    }
+                    Text(updateStatusText)
+                        .font(.system(size: 13))
+                        .foregroundStyle(updateStatusIsError ? Color.dsAccent : Color.dsMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(updateButtonTitle) {
+                        switch updates.status {
+                        case .updateAvailable, .rebuildAvailable:
+                            updates.updateAndRelaunch()
+                        default:
+                            updates.check()
+                        }
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(updateButtonDisabled)
+                    Text("Pulls the latest source from GitHub, rebuilds (tests included), and relaunches. This and model downloads are the app's only network use.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+    }
+
+    private var updateStatusText: String {
+        switch updates.status {
+        case .idle: return "Installed build \(updates.versionLine)."
+        case .checking: return "Checking for updates\u{2026}"
+        case .upToDate: return "Up to date."
+        case .updateAvailable(let n): return "\(n) new commit\(n == 1 ? "" : "s") available."
+        case .rebuildAvailable: return "Local source is newer than this build."
+        case .updating(let step): return step
+        case .failed(let message): return message
         }
-        .frame(width: 480, height: 680)
-        .background(Color.dsInk0)
-        .onAppear { store.refresh() }
-        .onDisappear { store.endShortcutCapture() }
+    }
+
+    private var updateStatusIsError: Bool {
+        if case .failed = updates.status { return true }
+        return false
+    }
+
+    private var updateButtonTitle: String {
+        switch updates.status {
+        case .updateAvailable: return "Update & Relaunch"
+        case .rebuildAvailable: return "Rebuild & Relaunch"
+        case .updating: return "Updating\u{2026}"
+        case .checking: return "Checking\u{2026}"
+        case .failed: return "Retry Check"
+        default: return "Check for Updates"
+        }
+    }
+
+    private var updateButtonDisabled: Bool {
+        switch updates.status {
+        case .checking, .updating: return true
+        default: return false
+        }
     }
 
     private var header: some View {
@@ -752,15 +918,18 @@ struct SettingsView: View {
 final class SettingsWindowController {
     private var window: NSWindow?
     private let makeStore: () -> SettingsStore
+    private(set) var store: SettingsStore?
 
     init(makeStore: @escaping () -> SettingsStore) {
         self.makeStore = makeStore
     }
 
-    func show() {
+    func show(tab: SettingsTab? = nil) {
         if window == nil {
             let store = makeStore()
-            let hosting = NSHostingController(rootView: SettingsView(store: store))
+            self.store = store
+            let hosting = NSHostingController(
+                rootView: SettingsView(store: store, updates: store.updates))
             let w = NSWindow(contentViewController: hosting)
             w.styleMask = [.titled, .closable, .fullSizeContentView]
             w.titlebarAppearsTransparent = true
@@ -771,6 +940,7 @@ final class SettingsWindowController {
             w.center()
             window = w
         }
+        if let tab { store?.selectedTab = tab }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         Log.info("settings window opened")
