@@ -9,25 +9,39 @@ enum HUDState {
     case error(String)
 }
 
-// Non-activating floating panel, Greenlight-red: one fixed line that is always
-// in motion. The animated waveform IS the HUD while listening; status text swaps
-// into the same line for the other states. Never two rows at once.
+// Non-activating floating panel, Greenlight-red, in two user-selectable sizes
+// (design handoff): Compact bar 180x32 with micro-label text states, and Micro
+// capsule 76x26 whose states collapse to glyphs. The animated waveform IS the
+// HUD while listening; states crossfade, never hard-cut.
 final class HUDController {
     private let panel: NSPanel
     private let card = NSView()
+    private let innerHairline = CALayer()
+    private let waveRow = NSView()
+    private let statusRow = NSView()
     private let waveform = WaveformLineView()
     private let sourceTag = NSTextField(labelWithString: "")
+    private let dot = NSView()
     private let label = NSTextField(labelWithString: "")
     private var dismissTimer: DispatchWorkItem?
-
-    private static let size = NSSize(width: 280, height: 44)
+    private var waveConstraints: [NSLayoutConstraint] = []
 
     var onAutoDismiss: (() -> Void)?
     var hudPosition: HUDPosition = .bottomCenter
+    var hudStyle: HUDStyle = .compactBar {
+        didSet { if hudStyle != oldValue { applyStyle() } }
+    }
+
+    private var size: NSSize {
+        hudStyle == .microCapsule ? NSSize(width: 76, height: 26) : NSSize(width: 180, height: 32)
+    }
+    private var cornerRadius: CGFloat {
+        hudStyle == .microCapsule ? 13 : 12
+    }
 
     init() {
         panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: Self.size),
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 180, height: 32)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: true)
         panel.level = .statusBar
@@ -39,36 +53,95 @@ final class HUDController {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
 
-        card.frame = NSRect(origin: .zero, size: Self.size)
         card.wantsLayer = true
         card.layer?.backgroundColor = DS.glass.cgColor
-        card.layer?.cornerRadius = DS.radiusControl
         card.layer?.cornerCurve = .continuous
         card.layer?.borderWidth = 1
         card.layer?.borderColor = DS.line.cgColor
+        // Inset hairline: a faint inner light edge so the glass reads over any wallpaper.
+        innerHairline.borderColor = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.05).cgColor
+        innerHairline.borderWidth = 0.5
+        innerHairline.cornerCurve = .continuous
+        card.layer?.addSublayer(innerHairline)
 
+        for row in [waveRow, statusRow] {
+            row.translatesAutoresizingMaskIntoConstraints = false
+            card.addSubview(row)
+        }
         waveform.translatesAutoresizingMaskIntoConstraints = false
         sourceTag.translatesAutoresizingMaskIntoConstraints = false
+        dot.translatesAutoresizingMaskIntoConstraints = false
         label.translatesAutoresizingMaskIntoConstraints = false
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
+        sourceTag.wantsLayer = true
+        sourceTag.layer?.backgroundColor = DS.ink2.cgColor
+        sourceTag.layer?.borderColor = DS.accent.withAlphaComponent(0.4).cgColor
+        sourceTag.layer?.borderWidth = 1
+        sourceTag.layer?.cornerRadius = 8
 
-        card.addSubview(waveform)
-        card.addSubview(sourceTag)
-        card.addSubview(label)
-        NSLayoutConstraint.activate([
-            // The system-audio tag shares the single line with the waveform.
-            sourceTag.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            sourceTag.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            waveform.leadingAnchor.constraint(equalTo: sourceTag.trailingAnchor, constant: 8),
-            waveform.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            waveform.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            waveform.heightAnchor.constraint(equalToConstant: 24),
-            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            label.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-        ])
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = DS.accent.cgColor
+        dot.layer?.cornerRadius = 3
+
+        waveRow.addSubview(sourceTag)
+        waveRow.addSubview(waveform)
+        statusRow.addSubview(dot)
+        statusRow.addSubview(label)
         panel.contentView = card
+        applyStyle()
+    }
+
+    // Rebuilds metrics when the style changes; the panel is repositioned on show.
+    private func applyStyle() {
+        card.frame = NSRect(origin: .zero, size: size)
+        card.layer?.cornerRadius = cornerRadius
+        innerHairline.frame = card.bounds.insetBy(dx: 0.5, dy: 0.5)
+        innerHairline.cornerRadius = cornerRadius - 0.5
+
+        NSLayoutConstraint.deactivate(waveConstraints)
+        let pad: CGFloat = hudStyle == .microCapsule ? 10 : 12
+        waveform.configure(
+            barCount: hudStyle == .microCapsule ? 9 : 22,
+            gap: hudStyle == .microCapsule ? 2.5 : 2)
+        waveConstraints = [
+            waveRow.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            waveRow.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            waveRow.topAnchor.constraint(equalTo: card.topAnchor),
+            waveRow.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            statusRow.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            statusRow.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            statusRow.topAnchor.constraint(equalTo: card.topAnchor),
+            statusRow.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            sourceTag.leadingAnchor.constraint(equalTo: waveRow.leadingAnchor, constant: pad),
+            sourceTag.centerYAnchor.constraint(equalTo: waveRow.centerYAnchor),
+            waveform.trailingAnchor.constraint(equalTo: waveRow.trailingAnchor, constant: -pad),
+            waveform.centerYAnchor.constraint(equalTo: waveRow.centerYAnchor),
+            waveform.heightAnchor.constraint(equalToConstant: hudStyle == .microCapsule ? 14 : 18),
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            label.centerYAnchor.constraint(equalTo: statusRow.centerYAnchor),
+        ]
+        if hudStyle == .microCapsule {
+            // Glyph-only: the dot or checkmark sits alone, centered.
+            waveConstraints += [
+                waveform.widthAnchor.constraint(equalToConstant: 48),
+                waveform.centerXAnchor.constraint(equalTo: waveRow.centerXAnchor),
+                dot.centerXAnchor.constraint(equalTo: statusRow.centerXAnchor),
+                dot.centerYAnchor.constraint(equalTo: statusRow.centerYAnchor),
+                label.centerXAnchor.constraint(equalTo: statusRow.centerXAnchor),
+            ]
+        } else {
+            waveConstraints += [
+                waveform.leadingAnchor.constraint(
+                    greaterThanOrEqualTo: sourceTag.trailingAnchor, constant: 8),
+                dot.centerYAnchor.constraint(equalTo: statusRow.centerYAnchor),
+                dot.trailingAnchor.constraint(equalTo: label.leadingAnchor, constant: -8),
+                label.centerXAnchor.constraint(equalTo: statusRow.centerXAnchor, constant: 4),
+                label.widthAnchor.constraint(lessThanOrEqualToConstant: 150),
+            ]
+        }
+        NSLayoutConstraint.activate(waveConstraints)
     }
 
     func show(_ state: HUDState) {
@@ -79,14 +152,23 @@ final class HUDController {
         case .recording(let source):
             showWaveform(source: source)
         case .transcribing:
-            showText("Transcribing", color: DS.muted)
+            showStatus(text: "Transcribing", color: DS.muted, dotStyle: .pulsing)
         case .processing:
-            showText("Polishing", color: DS.muted)
+            showStatus(text: "Polishing", color: DS.muted, dotStyle: .pulsing)
         case .success:
-            showText("Inserted", color: DS.paper)
+            if hudStyle == .microCapsule {
+                showGlyph("\u{2713}", color: DS.paper)
+            } else {
+                showStatus(text: "Inserted", color: DS.paper, dotStyle: .hidden)
+            }
             scheduleDismiss(after: 0.8)
         case .error(let message):
-            showText(message, color: DS.accent)
+            if hudStyle == .microCapsule {
+                card.layer?.borderColor = DS.accent.withAlphaComponent(0.55).cgColor
+                showStatus(text: "", color: DS.accent, dotStyle: .solid)
+            } else {
+                showStatus(text: message, color: DS.accent, dotStyle: .hidden)
+            }
             scheduleDismiss(after: 3.5)
         }
 
@@ -107,36 +189,87 @@ final class HUDController {
         panel.orderOut(nil)
     }
 
+    // MARK: - State rendering
+
     private func showWaveform(source: AudioSource) {
-        label.isHidden = true
-        waveform.isHidden = false
-        if source == .systemAudio {
+        card.layer?.borderColor = DS.line.cgColor
+        // System tag only fits the compact bar; the capsule stays waveform-only.
+        if source == .systemAudio, hudStyle == .compactBar {
             sourceTag.isHidden = false
-            sourceTag.attributedStringValue = microString("SYSTEM AUDIO", color: DS.accent)
+            sourceTag.attributedStringValue = NSAttributedString(
+                string: "  SYSTEM  ",
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .medium),
+                    .kern: 0.6,
+                    .foregroundColor: DS.accent,
+                ])
         } else {
             sourceTag.isHidden = true
-            sourceTag.attributedStringValue = NSAttributedString(string: "")
         }
         waveform.startAnimating()
+        crossfade(toWave: true)
     }
 
-    private func showText(_ text: String, color: NSColor) {
+    private enum DotStyle { case hidden, pulsing, solid }
+
+    private func showStatus(text: String, color: NSColor, dotStyle: DotStyle) {
+        card.layer?.borderColor = hudStyle == .microCapsule && dotStyle == .solid
+            ? DS.accent.withAlphaComponent(0.55).cgColor : DS.line.cgColor
         waveform.stopAnimating()
-        waveform.isHidden = true
-        sourceTag.isHidden = true
-        label.isHidden = false
-        label.attributedStringValue = microString(text, color: color)
-    }
-
-    // Greenlight micro label: mono, uppercase, wide tracking.
-    private func microString(_ text: String, color: NSColor) -> NSAttributedString {
-        NSAttributedString(
+        label.attributedStringValue = NSAttributedString(
             string: text.uppercased(),
             attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
                 .kern: 1.2,
                 .foregroundColor: color,
             ])
+        label.isHidden = text.isEmpty
+        dot.isHidden = dotStyle == .hidden
+        dot.layer?.removeAllAnimations()
+        dot.layer?.backgroundColor = DS.accent.cgColor
+        dot.layer?.cornerRadius = 3
+        if dotStyle == .pulsing {
+            // Breathes symmetrically: opacity .35->1, scale .82->1, 1.4s round trip.
+            let opacity = CABasicAnimation(keyPath: "opacity")
+            opacity.fromValue = 0.35
+            opacity.toValue = 1.0
+            let scale = CABasicAnimation(keyPath: "transform.scale")
+            scale.fromValue = 0.82
+            scale.toValue = 1.0
+            let group = CAAnimationGroup()
+            group.animations = [opacity, scale]
+            group.duration = 0.7
+            group.autoreverses = true
+            group.repeatCount = .infinity
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
+            dot.layer?.add(group, forKey: "pulse")
+        }
+        crossfade(toWave: false)
+    }
+
+    private func showGlyph(_ glyph: String, color: NSColor) {
+        card.layer?.borderColor = DS.line.cgColor
+        waveform.stopAnimating()
+        dot.isHidden = true
+        dot.layer?.removeAllAnimations()
+        label.isHidden = false
+        label.attributedStringValue = NSAttributedString(
+            string: glyph,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                .foregroundColor: color,
+            ])
+        crossfade(toWave: false)
+    }
+
+    // The waveform and status swap by opacity, never a hard cut.
+    private func crossfade(toWave: Bool) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = DS.hudCrossfade
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+            waveRow.animator().alphaValue = toWave ? 1 : 0
+            statusRow.animator().alphaValue = toWave ? 0 : 1
+        }
     }
 
     private func animateIn() {
@@ -146,7 +279,7 @@ final class HUDController {
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
             panel.animator().alphaValue = 1
             panel.animator().setFrame(target, display: true)
         }
@@ -176,44 +309,54 @@ final class HUDController {
         let origin: NSPoint
         switch hudPosition {
         case .bottomCenter:
-            origin = NSPoint(x: frame.midX - Self.size.width / 2, y: frame.minY + 120)
+            origin = NSPoint(x: frame.midX - size.width / 2, y: frame.minY + 120)
         case .topCenter:
-            origin = NSPoint(x: frame.midX - Self.size.width / 2, y: frame.maxY - Self.size.height - margin)
+            origin = NSPoint(x: frame.midX - size.width / 2, y: frame.maxY - size.height - margin)
         case .bottomLeft:
             origin = NSPoint(x: frame.minX + margin, y: frame.minY + margin)
         case .bottomRight:
-            origin = NSPoint(x: frame.maxX - Self.size.width - margin, y: frame.minY + margin)
+            origin = NSPoint(x: frame.maxX - size.width - margin, y: frame.minY + margin)
         }
-        panel.setFrame(NSRect(origin: origin, size: Self.size), display: true)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        card.frame = NSRect(origin: .zero, size: size)
+        innerHairline.frame = card.bounds.insetBy(dx: 0.5, dy: 0.5)
     }
 }
 
-// The single always-moving line: a gentle traveling idle wave that speech
-// amplitude rides on top of, drawn as accent-red bars.
+// The always-moving line: a raised-cosine window (edges 0.4, center 1.0) over
+// two summed traveling sines, scaled by live mic amplitude — breathes at idle,
+// rides speech when talking. Exact math from the design handoff.
 final class WaveformLineView: NSView {
-    private static let barCount = 40
+    private var barCount = 22
+    private var gap: CGFloat = 2
+    private var phase: Double = 0
+    private var envelope: CGFloat = 0
+    private var timer: Timer?
+
     private static let frameInterval: TimeInterval = 1.0 / 30.0
 
-    private var history: [Float] = []
-    private var phase: CGFloat = 0
-    private var timer: Timer?
+    func configure(barCount: Int, gap: CGFloat) {
+        self.barCount = barCount
+        self.gap = gap
+        needsDisplay = true
+    }
 
     func push(level: Float) {
         DispatchQueue.main.async {
-            self.history.append(level)
-            if self.history.count > Self.barCount {
-                self.history.removeFirst(self.history.count - Self.barCount)
-            }
+            // Fast attack, slow release, so speech feels immediate but not jittery.
+            let target = CGFloat(level.squareRoot()) * 1.8
+            self.envelope = target > self.envelope
+                ? self.envelope * 0.4 + target * 0.6
+                : self.envelope * 0.85
         }
     }
 
     func startAnimating() {
-        history.removeAll()
+        envelope = 0
         guard timer == nil else { return }
-        // Timer drives the idle motion so the line breathes even at zero input.
         timer = Timer.scheduledTimer(withTimeInterval: Self.frameInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.phase += 0.16
+            self.phase += Self.frameInterval
             self.needsDisplay = true
         }
         RunLoop.main.add(timer!, forMode: .common)
@@ -222,24 +365,26 @@ final class WaveformLineView: NSView {
     func stopAnimating() {
         timer?.invalidate()
         timer = nil
-        history.removeAll()
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let barWidth = bounds.width / CGFloat(Self.barCount)
-        for i in 0..<Self.barCount {
-            // Two out-of-phase sines make the idle motion feel organic, not metronomic.
-            let x = CGFloat(i)
-            let idle = 0.10 + 0.06 * sin(phase + x * 0.55) * sin(phase * 0.7 + x * 0.23)
-            let historyIndex = history.count - Self.barCount + i
-            let level = historyIndex >= 0 && historyIndex < history.count ? history[historyIndex] : 0
-            let speech = min(1.0, CGFloat(level.squareRoot()) * 2.2)
-            let normalized = max(CGFloat(idle), speech)
-            let h = max(2, normalized * bounds.height)
-            DS.accent.setFill()
+        guard barCount > 1 else { return }
+        let barWidth = (bounds.width - gap * CGFloat(barCount - 1)) / CGFloat(barCount)
+        guard barWidth > 0 else { return }
+        // Idle sits at 0.7 so the line visibly breathes; speech lifts toward 1.
+        let amp = min(1.0, 0.7 + min(0.5, envelope))
+        DS.accent.setFill()
+        for i in 0..<barCount {
+            let p = Double(i) / Double(barCount - 1)
+            let window = 0.4 + 0.6 * sin(.pi * p)
+            let s1 = sin(p * .pi * 2 * 1.4 + phase * 2.1)
+            let s2 = sin(p * .pi * 2 * 0.6 - phase * 1.15)
+            let v = max(0.05, (0.5 + 0.26 * s1 + 0.24 * s2) * window * amp)
+            let h = max(2.5, CGFloat(v) * bounds.height)
             let rect = NSRect(
-                x: x * barWidth + 1, y: (bounds.height - h) / 2,
-                width: barWidth - 2, height: h)
+                x: CGFloat(i) * (barWidth + gap),
+                y: (bounds.height - h) / 2,
+                width: barWidth, height: h)
             NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
         }
     }

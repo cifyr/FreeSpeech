@@ -27,6 +27,7 @@ enum TranscriptionError: LocalizedError {
 
 struct EngineToken {
     let start: Double
+    let end: Double
     // Raw whisper text piece: leading space marks a word boundary; pieces
     // concatenate verbatim to reconstruct the transcript.
     let text: String
@@ -164,7 +165,9 @@ final class WhisperCppEngine: TranscriptionEngine {
                           let piece = whisper_full_get_token_text(ctx, i, j) else { continue }
                     let data = whisper_full_get_token_data(ctx, i, j)
                     tokens.append(EngineToken(
-                        start: Double(data.t0) / 100.0, text: String(cString: piece)))
+                        start: Double(data.t0) / 100.0,
+                        end: Double(data.t1) / 100.0,
+                        text: String(cString: piece)))
                 }
             }
             // Segment timestamps are in centiseconds.

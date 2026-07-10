@@ -100,6 +100,18 @@
     border: 1px solid var(--line); background: var(--surface-2);
     border-radius: 8px; padding: 5px 10px; color: var(--text);
   }
+  .cta { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; justify-content: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: #fff; text-decoration: none;
+    font-weight: 600; font-size: 1rem; padding: 13px 24px;
+    border-radius: 12px; transition: transform 0.12s ease, filter 0.12s ease;
+  }
+  .btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .btn-ghost { color: var(--muted); text-decoration: none; font-size: 0.95rem; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+  .btn-ghost:hover { color: var(--text); }
+  .cta-note { margin-top: 16px; color: var(--faint); font-size: 0.68rem; }
   .wave-band {
     margin-top: 40px; height: 132px; width: 100%;
     background: linear-gradient(180deg, transparent, var(--wave-bg));
@@ -181,6 +193,11 @@
       <span class="key">Right Option</span>
       <span style="color: var(--muted)">hold, speak, release</span>
     </div>
+    <div class="cta">
+      <a class="btn" href="https://github.com/cifyr/FreeSpeech/releases/latest/download/FreeSpeech.zip">Download for macOS</a>
+      <a class="btn-ghost" href="https://github.com/cifyr/FreeSpeech/releases/latest/download/FreeSpeech-lite.zip">or the 4&nbsp;MB lite build</a>
+    </div>
+    <div class="cta-note mono">Apple Silicon · macOS 26 · 510&nbsp;MB, model included</div>
   </div>
   <div class="wave-band"><canvas id="wave" aria-hidden="true"></canvas></div>
 </header>
@@ -257,7 +274,7 @@
         <li><div><div class="step-t">Grant Microphone &amp; Accessibility</div><div class="step-d">The setup guide walks you through both. They let FreeSpeech hear you and type for you — nothing leaves your Mac.</div></div></li>
         <li><div><div class="step-t">Hold Right Option and talk</div><div class="step-d">Anywhere. FreeSpeech lives in your menu bar for settings, models, and the system-audio hotkey.</div></div></li>
       </ol>
-      <div class="note"><strong>First launch downloads the model once</strong> — about 550&nbsp;MB, over the internet. After that it runs completely offline. If <code>install.command</code> won't open, drag it into Terminal and press Return.</div>
+      <div class="note"><strong>Two downloads.</strong> The full build (510&nbsp;MB) includes the speech model and works offline immediately. The lite build (4&nbsp;MB) downloads the model once on first launch. Either way it runs completely on-device afterward. If <code>install.command</code> won't open, drag it into Terminal and press Return.</div>
     </div>
   </section>
 </main>

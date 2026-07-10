@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         hud.hudPosition = settings.hudPosition
+        hud.hudStyle = settings.hudStyle
 
         let onMaxDuration: () -> Void = { [weak self] in
             guard let self else { return }
@@ -255,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applySettings() {
         installHotkey()
         hud.hudPosition = settings.hudPosition
+        hud.hudStyle = settings.hudStyle
         if AppPaths.modelFile(named: settings.modelName).path != loadedModelPath {
             loadModel()
         }
@@ -428,7 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         language: "en", detectSpeakerTurns: true, tokenTimestamps: false)
                     let turns = turnSegments.filter(\.speakerTurnNext).map(\.end)
                     let pieces = segments.flatMap(\.tokens)
-                        .map { TimedSegment(start: $0.start, text: $0.text) }
+                        .map { TimedSegment(start: $0.start, end: $0.end, text: $0.text) }
                     Log.info("speaker split: \(turns.count) turn(s) detected across \(pieces.count) words")
                     raw = SpeakerSplitter.merged(pieces: pieces, turnTimes: turns)
                 } else {

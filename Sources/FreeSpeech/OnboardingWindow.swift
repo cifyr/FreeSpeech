@@ -191,7 +191,7 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 14) {
-            bigTitle("Welcome to FreeSpeech")
+            heroTitle("Welcome to FreeSpeech")
             body("FreeSpeech turns your voice into text in any app — fully on your Mac, nothing sent to the cloud. Hold a hotkey, speak, and the words appear wherever your cursor is.")
             body("This quick setup grants two permissions, sets your two hotkeys, and lets you try it once. Takes about a minute.")
         }
@@ -277,7 +277,7 @@ struct OnboardingView: View {
 
     private var done: some View {
         VStack(alignment: .leading, spacing: 14) {
-            bigTitle("You're all set")
+            heroTitle("You're all set")
             body("\(store.actionVerb(store.hotkey.displayName)) anywhere to dictate your voice. \(store.actionVerb(store.systemHotkey.displayName)) to transcribe what your Mac is playing.")
             body("FreeSpeech lives in your menu bar — open it anytime for settings and models. Everything runs on-device.")
         }
@@ -335,14 +335,16 @@ struct OnboardingView: View {
                     .font(.system(size: 11, weight: .medium, design: .monospaced)).kerning(1.2)
                     .foregroundStyle(Color.dsMuted)
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.dsInk2)
-                    Capsule().fill(Color.dsAccent)
-                        .frame(width: geo.size.width * CGFloat(store.stepIndex) / CGFloat(store.stepCount))
+            // Segmented tracks: done/current paper, upcoming hairline — progress
+            // reads as steps, and paper keeps accent reserved for the live voice.
+            HStack(spacing: 6) {
+                ForEach(1...store.stepCount, id: \.self) { index in
+                    Capsule()
+                        .fill(index <= store.stepIndex ? Color.dsPaper : Color.dsLine)
+                        .frame(height: 3)
                 }
             }
-            .frame(height: 4)
+            .animation(.easeOut(duration: DS.durBase), value: store.stepIndex)
         }
         .padding(.horizontal, 28).padding(.top, 22)
     }
@@ -354,13 +356,14 @@ struct OnboardingView: View {
             }
             Button("Skip setup") { store.skipAll() }.buttonStyle(GhostButtonStyle())
             Spacer()
+            // Filled-paper default action: accent is the live-voice color, not decoration.
             Button(action: { store.next() }) {
                 Text(store.step == .done ? "Start dictating" : "Continue")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.dsInk0)
+                    .foregroundStyle(primaryEnabled ? Color.dsInk0 : Color.dsFaint)
                     .padding(.horizontal, 18)
                     .frame(height: 38)
-                    .background(primaryEnabled ? Color.dsAccent : Color.dsInk3,
+                    .background(primaryEnabled ? Color.dsPaper : Color.dsInk3,
                                in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -378,9 +381,10 @@ struct OnboardingView: View {
 
     private func permissionRow(name: String, granted: Bool, detail: String, action: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
+            // Granted must never read like the red error/live color: paper check.
             Image(systemName: granted ? "checkmark.circle.fill" : "circle")
                 .font(.system(size: 18))
-                .foregroundStyle(granted ? Color.dsAccent : Color.dsFaint)
+                .foregroundStyle(granted ? Color.dsPaper : Color.dsFaint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.dsPaper)
                 Text(detail).font(.system(size: 11)).foregroundStyle(Color.dsMuted)
@@ -389,7 +393,7 @@ struct OnboardingView: View {
             if granted {
                 Text("GRANTED")
                     .font(.system(size: 10, weight: .medium, design: .monospaced)).kerning(1)
-                    .foregroundStyle(Color.dsAccent)
+                    .foregroundStyle(Color.dsMuted)
             } else {
                 Button("Grant", action: action).buttonStyle(GhostButtonStyle())
             }
@@ -415,7 +419,11 @@ struct OnboardingView: View {
     }
 
     private func bigTitle(_ text: String) -> some View {
-        Text(text).font(.system(size: 24, weight: .heavy)).foregroundStyle(Color.dsPaper)
+        Text(text).font(.system(size: 28, weight: .heavy)).foregroundStyle(Color.dsPaper)
+    }
+    // The ends of the flow get the extra weight.
+    private func heroTitle(_ text: String) -> some View {
+        Text(text).font(.system(size: 34, weight: .heavy)).foregroundStyle(Color.dsPaper)
     }
     private func body(_ text: String) -> some View {
         Text(text).font(.system(size: 13)).foregroundStyle(Color.dsMuted)

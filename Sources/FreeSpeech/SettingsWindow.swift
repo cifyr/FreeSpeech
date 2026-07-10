@@ -65,6 +65,12 @@ final class SettingsStore: ObservableObject {
             onModelChanged()  // applySettings pushes the position to the HUD
         }
     }
+    @Published var hudStyle: HUDStyle {
+        didSet {
+            settings.hudStyle = hudStyle
+            onModelChanged()  // applySettings pushes the style to the HUD
+        }
+    }
     @Published var replacements: [(from: String, to: String)] = []
     @Published var newReplacementFrom: String = ""
     @Published var newReplacementTo: String = ""
@@ -110,6 +116,7 @@ final class SettingsStore: ObservableObject {
         _language = Published(initialValue: settings.language)
         _soundCuesEnabled = Published(initialValue: settings.soundCuesEnabled)
         _hudPosition = Published(initialValue: settings.hudPosition)
+        _hudStyle = Published(initialValue: settings.hudStyle)
         _splitSpeakers = Published(initialValue: settings.splitSpeakersEnabled)
         refresh()
     }
@@ -325,18 +332,22 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
-                HStack(spacing: 8) {
-                    ForEach(SettingsTab.allCases, id: \.self) { tab in
-                        chip(tab.rawValue, selected: store.selectedTab == tab) {
-                            store.selectedTab = tab
+                // Underline tabs sit on a full-width hairline; only cards scroll.
+                ZStack(alignment: .bottom) {
+                    Rectangle().fill(Color.dsLine).frame(height: 1)
+                    HStack(spacing: 24) {
+                        ForEach(SettingsTab.allCases, id: \.self) { tab in
+                            DSTabButton(title: tab.rawValue, selected: store.selectedTab == tab) {
+                                store.selectedTab = tab
+                            }
                         }
+                        Spacer()
                     }
                 }
             }
-            .padding([.horizontal, .top], 20)
-            .padding(.bottom, 12)
+            .padding([.horizontal, .top], 24)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     switch store.selectedTab {
@@ -346,8 +357,8 @@ struct SettingsView: View {
                     case .smarts: smartsTab
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
             }
         }
         .frame(width: 480, height: 640)
@@ -374,9 +385,7 @@ struct SettingsView: View {
                     HStack {
                         sectionLabel("Split speakers (system audio)")
                         Spacer()
-                        chip(store.splitSpeakers ? "On" : "Off", selected: store.splitSpeakers) {
-                            store.splitSpeakers.toggle()
-                        }
+                        DSCheckbox(isOn: $store.splitSpeakers)
                     }
                     Text("System-audio captures get a line break whenever the voice changes — each speaker on their own line. Uses a second on-device pass, adding roughly one transcription's latency. English-focused. Rewrite modes are skipped for split transcripts.")
                         .font(.system(size: 11))
@@ -428,9 +437,7 @@ struct SettingsView: View {
                     HStack {
                         sectionLabel("Keep transcript on clipboard")
                         Spacer()
-                        chip(store.copyToClipboard ? "On" : "Off", selected: store.copyToClipboard) {
-                            store.copyToClipboard.toggle()
-                        }
+                        DSCheckbox(isOn: $store.copyToClipboard)
                     }
                     Text("On: every dictation stays on the clipboard after insertion, ready to paste again. Off: your previous clipboard contents are restored.")
                         .font(.system(size: 11))
@@ -490,9 +497,7 @@ struct SettingsView: View {
                     HStack {
                         sectionLabel("Learning")
                         Spacer()
-                        chip(store.learningEnabled ? "On" : "Off", selected: store.learningEnabled) {
-                            store.learningEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.learningEnabled)
                     }
                     Text(store.learnedSummary)
                         .font(.system(size: 13))
@@ -573,9 +578,7 @@ struct SettingsView: View {
                     HStack {
                         sectionLabel("Use on-screen context")
                         Spacer()
-                        chip(store.screenContextEnabled ? "On" : "Off", selected: store.screenContextEnabled) {
-                            store.screenContextEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.screenContextEnabled)
                     }
                     Text("Reads names visible in the focused window when you start dictating — replying to Gurkaran makes \"Gurkaran\" transcribe correctly. Local only, nothing stored.")
                         .font(.system(size: 11))
@@ -591,9 +594,7 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
                         Spacer()
-                        chip(store.spokenCommandsEnabled ? "On" : "Off", selected: store.spokenCommandsEnabled) {
-                            store.spokenCommandsEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.spokenCommandsEnabled)
                     }
                     Text("\"new line\", \"new paragraph\" become breaks; \"scratch that\" discards what you said before it.")
                         .font(.system(size: 11))
@@ -603,9 +604,7 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
                         Spacer()
-                        chip(store.fillerStrippingEnabled ? "On" : "Off", selected: store.fillerStrippingEnabled) {
-                            store.fillerStrippingEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.fillerStrippingEnabled)
                     }
                     Text("Removes um, uh, erm before inserting.")
                         .font(.system(size: 11))
@@ -621,13 +620,33 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
                         Spacer()
-                        Picker("", selection: $store.language) {
+                        // Minimal dropdown: value + faint chevron, no box — the
+                        // stock control's fill/border clashed with the dark cards.
+                        Menu {
                             ForEach(TranscriptionLanguage.options, id: \.code) { option in
-                                Text(option.name).tag(option.code)
+                                Button {
+                                    store.language = option.code
+                                } label: {
+                                    if store.language == option.code {
+                                        Label(option.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.name)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(TranscriptionLanguage.name(for: store.language))
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.dsPaper)
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.dsFaint)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .frame(width: 160)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
                     }
                     Text("Auto-detect and non-English need a multilingual model (the default large-v3-turbo works; \".en\" models are English-only).")
                         .font(.system(size: 11))
@@ -697,7 +716,7 @@ struct SettingsView: View {
                         }
                         .padding(.vertical, 2)
                     }
-                    Menu("Add rule for an open app\u{2026}") {
+                    Menu {
                         ForEach(store.runningApps, id: \.bundleID) { app in
                             Menu(app.name) {
                                 ForEach(PostProcessingMode.allCases, id: \.self) { mode in
@@ -707,11 +726,19 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("Add rule for an open app\u{2026}")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.dsPaper)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Color.dsFaint)
+                        }
                     }
                     .menuStyle(.borderlessButton)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.dsPaper)
-                    .frame(maxWidth: 260)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                     Text("Overrides the rewrite mode when dictating into that app, e.g. grammar fixes in Mail but raw text in the terminal.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
@@ -726,20 +753,29 @@ struct SettingsView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
                         Spacer()
-                        chip(store.soundCuesEnabled ? "On" : "Off", selected: store.soundCuesEnabled) {
-                            store.soundCuesEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.soundCuesEnabled)
                     }
                     HStack {
                         Text("Launch at login")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
                         Spacer()
-                        chip(store.launchAtLogin ? "On" : "Off", selected: store.launchAtLogin) {
-                            store.setLaunchAtLogin(!store.launchAtLogin)
-                        }
+                        DSCheckbox(isOn: Binding(
+                            get: { store.launchAtLogin },
+                            set: { store.setLaunchAtLogin($0) }))
                     }
                     Divider().overlay(Color.dsLine).padding(.vertical, 4)
+                    sectionLabel("HUD style")
+                    HStack(spacing: 8) {
+                        ForEach(HUDStyle.allCases, id: \.self) { style in
+                            chip(style.displayName, selected: store.hudStyle == style) {
+                                store.hudStyle = style
+                            }
+                        }
+                    }
+                    Text("Compact bar shows status text; Micro capsule is glyph-only (dot while working, check when inserted).")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
                     sectionLabel("HUD position")
                     HStack(spacing: 8) {
                         ForEach(HUDPosition.allCases, id: \.self) { position in
@@ -756,9 +792,7 @@ struct SettingsView: View {
                     HStack {
                         sectionLabel("History")
                         Spacer()
-                        chip(store.historyEnabled ? "On" : "Off", selected: store.historyEnabled) {
-                            store.historyEnabled.toggle()
-                        }
+                        DSCheckbox(isOn: $store.historyEnabled)
                     }
                     Text("Local transcript history, browsable from the menu bar.")
                         .font(.system(size: 11))
@@ -911,53 +945,62 @@ struct SettingsView: View {
     }
 
     private func chip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(selected ? Color.dsAccent : Color.dsPaper)
-                .padding(.horizontal, 14)
-                .frame(height: 32)
-                .background(Color.dsInk2, in: Capsule())
-                .overlay(Capsule().strokeBorder(
-                    selected ? Color.dsAccent.opacity(0.6) : Color.dsLine, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.15), value: selected)
+        DSChip(title: title, selected: selected, action: action)
     }
 
     private func selectableRow(
         title: String, subtitle: String, selected: Bool,
         disabled: Bool = false, badge: String? = nil, action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(selected ? Color.dsAccent : Color.clear)
-                    .overlay(Circle().strokeBorder(
-                        selected ? Color.dsAccent : Color.dsFaint, lineWidth: 1.5))
-                    .frame(width: 14, height: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(disabled ? Color.dsFaint : Color.dsPaper)
-                        if let badge { tag(badge, color: .dsAccent) }
+        SelectableRow(
+            title: title, subtitle: subtitle, selected: selected,
+            disabled: disabled, badge: badge, tag: { t, c in AnyView(tag(t, color: c)) },
+            action: action)
+    }
+
+    private struct SelectableRow: View {
+        let title: String
+        let subtitle: String
+        let selected: Bool
+        let disabled: Bool
+        let badge: String?
+        let tag: (String, Color) -> AnyView
+        let action: () -> Void
+        @State private var hovering = false
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(selected ? Color.dsAccent : Color.clear)
+                        .overlay(Circle().strokeBorder(
+                            selected ? Color.dsAccent : Color.dsFaint, lineWidth: 1.5))
+                        .frame(width: 14, height: 14)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(disabled ? Color.dsFaint : Color.dsPaper)
+                            if let badge { tag(badge, .dsAccent) }
+                        }
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsMuted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dsMuted)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
                 }
-                Spacer()
+                .padding(10)
+                .background(
+                    selected ? Color.dsInk3 : (hovering && !disabled ? Color.dsInk3.opacity(0.6) : Color.clear),
+                    in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
             }
-            .padding(10)
-            .background(
-                selected ? Color.dsInk3 : Color.clear,
-                in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+            .buttonStyle(.plain)
+            .disabled(disabled)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: DS.durInstant), value: hovering)
+            .animation(.easeOut(duration: DS.durBase), value: selected)
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .animation(.easeOut(duration: 0.15), value: selected)
     }
 
     // Dot meter like ●●●○○ for a 1...5 rating.

@@ -61,24 +61,41 @@ struct HistoryView: View {
                 Spacer()
                 Button("Clear All") { model.clearAll() }
                     .buttonStyle(GhostButtonStyle())
+                    .opacity(model.entries.isEmpty ? 0.5 : 1)
             }
-            TextField("Search transcripts", text: $model.query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.dsPaper)
-                .padding(.horizontal, 14)
-                .frame(height: 40)
-                .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
-                        .strokeBorder(Color.dsLine, lineWidth: 1))
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.dsFaint)
+                TextField("Search transcripts", text: $model.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.dsPaper)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 40)
+            .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                    .strokeBorder(Color.dsLine, lineWidth: 1))
 
             if model.entries.isEmpty {
-                Text(model.query.isEmpty ? "No dictations yet" : "No matches")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.dsMuted)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 40)
+                VStack(spacing: 8) {
+                    Text("EMPTY")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .kerning(1.2)
+                        .foregroundStyle(Color.dsFaint)
+                    Text(model.query.isEmpty ? "No dictations yet" : "No matches")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.dsMuted)
+                    Text(model.query.isEmpty
+                         ? "Hold your hotkey and speak - every insertion lands here."
+                         : "Try a shorter search.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 48)
                 Spacer()
             } else {
                 ScrollView {
@@ -97,9 +114,21 @@ struct HistoryView: View {
     }
 
     private func row(_ entry: HistoryEntry) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HistoryRow(entry: entry, model: model, timeFormatter: Self.timeFormatter)
+    }
+}
+
+// Copy/Insert stay hidden until hover so the resting list is just transcripts.
+private struct HistoryRow: View {
+    let entry: HistoryEntry
+    let model: HistoryViewModel
+    let timeFormatter: DateFormatter
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text(Self.timeFormatter.string(from: entry.timestamp).uppercased())
+                Text(timeFormatter.string(from: entry.timestamp).uppercased())
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .kerning(1.0)
                     .foregroundStyle(Color.dsFaint)
@@ -114,27 +143,48 @@ struct HistoryView: View {
                         .foregroundStyle(Color.dsAccent)
                 }
                 Spacer()
-                Button("Copy") { model.copy(entry) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.dsAccent)
-                Button("Insert") { model.onInsert(entry.text) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.dsMuted)
+                HStack(spacing: 12) {
+                    hoverButton("Copy") { model.copy(entry) }
+                    hoverButton("Insert") { model.onInsert(entry.text) }
+                }
+                .opacity(hovering ? 1 : 0)
             }
             Text(entry.text)
                 .font(.system(size: 13))
+                .lineSpacing(3)
                 .foregroundStyle(Color.dsPaper)
                 .lineLimit(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.dsInk1, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
                 .strokeBorder(Color.dsLine, lineWidth: 1))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: DS.durInstant), value: hovering)
+    }
+
+    private func hoverButton(_ title: String, action: @escaping () -> Void) -> some View {
+        HistoryActionButton(title: title, action: action)
+    }
+}
+
+private struct HistoryActionButton: View {
+    let title: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(hovering ? Color.dsAccent : Color.dsMuted)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: DS.durInstant), value: hovering)
     }
 }
 

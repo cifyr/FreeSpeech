@@ -15,11 +15,21 @@ enum DS {
     static let faint = NSColor(srgbRed: 0.333, green: 0.333, blue: 0.373, alpha: 1)  // 55555F
     static let accent = NSColor(srgbRed: 1.0, green: 0.271, blue: 0.227, alpha: 1)   // FF453A
     static let accentDim = NSColor(srgbRed: 0.792, green: 0.227, blue: 0.196, alpha: 1) // CA3A32
-    static let glass = NSColor(srgbRed: 0.075, green: 0.075, blue: 0.094, alpha: 0.88)
+    static let glass = NSColor(srgbRed: 0.075, green: 0.075, blue: 0.094, alpha: 0.85)
+    // Hover overlay for transparent controls; ink3 is the hover/selected fill.
+    static let controlHover = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.05)
 
     static let radiusControl: CGFloat = 14
     static let radiusCard: CGFloat = 20
     static let radiusSheet: CGFloat = 28
+    static let radiusKeycap: CGFloat = 10
+
+    // One decelerate curve for all interface motion keeps the app calm;
+    // only the pulse breathes symmetrically (ease-in-out, in HUD).
+    static let durInstant: TimeInterval = 0.12
+    static let durBase: TimeInterval = 0.20
+    static let durSlow: TimeInterval = 0.32
+    static let hudCrossfade: TimeInterval = 0.18
 
     // Greenlight's mono label voice: micro size, uppercase, wide tracking.
     static func microLabel(_ text: String) -> NSAttributedString {
@@ -33,21 +43,133 @@ enum DS {
     }
 }
 
-// Greenlight ghost button: transparent fill, hairline border, paper text.
+// Greenlight ghost button: transparent fill, hairline border, paper text;
+// hover lifts with the controlHover overlay, press fills ink3.
 struct GhostButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        GhostButtonBody(configuration: configuration)
+    }
+
+    private struct GhostButtonBody: View {
+        let configuration: Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.dsPaper)
+                .padding(.horizontal, 14)
+                .frame(height: 36)
+                .background(
+                    configuration.isPressed
+                        ? Color.dsInk3
+                        : (hovering ? Color(nsColor: DS.controlHover) : Color.clear),
+                    in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                        .strokeBorder(Color.dsLine, lineWidth: 1))
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: DS.durInstant), value: configuration.isPressed)
+                .animation(.easeOut(duration: DS.durInstant), value: hovering)
+        }
+    }
+}
+
+// Filled default-action button: paper fill, ink text. One per screen; accent
+// red is the app's live-voice color, never decoration.
+struct PrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color.dsPaper)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.dsInk0)
+            .padding(.horizontal, 18)
+            .frame(height: 38)
             .background(
-                configuration.isPressed ? Color.dsInk3 : Color.clear,
+                Color.dsPaper.opacity(configuration.isPressed ? 0.82 : 1),
                 in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
-                    .strokeBorder(Color.dsLine, lineWidth: 1))
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(.easeOut(duration: DS.durInstant), value: configuration.isPressed)
+    }
+}
+
+// Minimal boolean toggle: 18x18, dark in both states, the paper check is the
+// only bright mark. Quieter than a switch; accent stays reserved for live voice.
+struct DSCheckbox: View {
+    @Binding var isOn: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isOn ? Color.dsInk3 : (hovering ? Color.dsInk3 : Color.dsInk2))
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(Color.dsLine, lineWidth: 1)
+                if isOn {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.dsPaper)
+                }
+            }
+            .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: DS.durInstant), value: isOn)
+    }
+}
+
+// Capsule chip for short one-of-many choices; hover fills ink3 at durInstant,
+// selection is the accent-60 border + accent text.
+struct DSChip: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(selected ? Color.dsAccent : Color.dsPaper)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(hovering && !selected ? Color.dsInk3 : Color.dsInk2, in: Capsule())
+                .overlay(Capsule().strokeBorder(
+                    selected ? Color.dsAccent.opacity(0.6) : Color.dsLine, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: DS.durInstant), value: hovering)
+        .animation(.easeOut(duration: DS.durInstant), value: selected)
+    }
+}
+
+// Quiet underline tab on a full-width hairline: selected = paper + 2px accent
+// underline, unselected = muted lifting to paper on hover. No pill fill.
+struct DSTabButton: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(selected ? Color.dsPaper : (hovering ? Color.dsPaper : Color.dsMuted))
+                Rectangle()
+                    .fill(selected ? Color.dsAccent : Color.clear)
+                    .frame(height: 2)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: DS.durBase), value: selected)
+        .animation(.easeOut(duration: DS.durInstant), value: hovering)
     }
 }
 

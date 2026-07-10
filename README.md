@@ -38,16 +38,21 @@ app that stays out of your way: hold **Right Option**, talk, release.
 - **Apple Silicon** Mac (M1 or newer)
 - **macOS 26** or newer
 
-## Install (for non-developers)
+## Download & install
 
-If someone sent you a share zip, see **[INSTALL.md](INSTALL.md)**. In short:
+Grab the [latest release](https://github.com/cifyr/FreeSpeech/releases/latest):
+
+- **[FreeSpeech.zip](https://github.com/cifyr/FreeSpeech/releases/latest/download/FreeSpeech.zip)** — 510 MB, model included, works offline immediately.
+- **[FreeSpeech-lite.zip](https://github.com/cifyr/FreeSpeech/releases/latest/download/FreeSpeech-lite.zip)** — 4 MB; downloads the model once on first launch.
+
+Then (see **[INSTALL.md](INSTALL.md)** for detail):
 
 1. Unzip the file.
 2. **Right-click** `install.command` → **Open** (approve the one-time unidentified-developer prompt).
 3. Grant **Microphone** and **Accessibility** when the setup guide asks.
 4. Hold **Right Option** and talk.
 
-First launch downloads the model once (~550 MB); after that it runs completely offline.
+The app isn't notarized, so the right-click-Open step is required (a plain double-click is blocked by Gatekeeper). Everything runs on-device.
 
 ## Build from source
 

@@ -2,8 +2,8 @@ import XCTest
 @testable import FreeSpeechCore
 
 final class SpeakerSplitterTests: XCTestCase {
-    private func piece(_ start: Double, _ text: String) -> TimedSegment {
-        TimedSegment(start: start, text: text)
+    private func piece(_ start: Double, _ text: String, end: Double? = nil) -> TimedSegment {
+        TimedSegment(start: start, end: end, text: text)
     }
 
     func testTurnInsertsLineBreakAtWordBoundary() {
@@ -64,6 +64,27 @@ final class SpeakerSplitterTests: XCTestCase {
             pieces: [piece(4.0, " ok"), piece(4.6, " bye."), piece(5.4, " hi"), piece(5.8, " there.")],
             turnTimes: [5.0])
         XCTAssertEqual(out, "Ok bye.\nHi there.")
+    }
+
+    func testTurnInsideLastWordStaysAfterThatWord() {
+        let out = SpeakerSplitter.merged(
+            pieces: [
+                piece(4.0, " ok", end: 4.3),
+                piece(4.8, " bye.", end: 5.15),
+                piece(5.4, " hi", end: 5.7),
+            ],
+            turnTimes: [5.0])
+        XCTAssertEqual(out, "Ok bye.\nHi")
+    }
+
+    func testSlightlyLateTurnStillBreaksBeforeNewSpeakerWord() {
+        let out = SpeakerSplitter.merged(
+            pieces: [
+                piece(4.0, " ok", end: 4.3),
+                piece(5.05, " hi", end: 5.3),
+            ],
+            turnTimes: [5.12])
+        XCTAssertEqual(out, "Ok\nHi")
     }
 }
 

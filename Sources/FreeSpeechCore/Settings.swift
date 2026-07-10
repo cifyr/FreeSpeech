@@ -100,6 +100,7 @@ public final class Settings {
         static let language = "transcriptionLanguage"
         static let soundCuesEnabled = "soundCuesEnabled"
         static let hudPosition = "hudPosition"
+        static let hudStyle = "hudStyle"
         static let appProfiles = "appPostProcessingProfiles"
         static let splitSpeakers = "splitSpeakersEnabled"
         static let onboarded = "hasCompletedOnboarding"
@@ -222,6 +223,11 @@ public final class Settings {
         set { defaults.set(newValue.rawValue, forKey: Key.hudPosition) }
     }
 
+    public var hudStyle: HUDStyle {
+        get { defaults.string(forKey: Key.hudStyle).flatMap(HUDStyle.init) ?? .compactBar }
+        set { defaults.set(newValue.rawValue, forKey: Key.hudStyle) }
+    }
+
     // Per-app override of the post-processing mode, keyed by bundle identifier.
     public var appProfiles: [String: String] {
         get { defaults.dictionary(forKey: Key.appProfiles) as? [String: String] ?? [:] }
@@ -281,6 +287,19 @@ public final class Settings {
     public var hasCompletedOnboarding: Bool {
         get { defaults.bool(forKey: Key.onboarded) }
         set { defaults.set(newValue, forKey: Key.onboarded) }
+    }
+}
+
+// Two sizes from the design handoff; both replace the original 280x44 panel.
+public enum HUDStyle: String, CaseIterable {
+    case compactBar
+    case microCapsule
+
+    public var displayName: String {
+        switch self {
+        case .compactBar: return "Compact bar"
+        case .microCapsule: return "Micro capsule"
+        }
     }
 }
 

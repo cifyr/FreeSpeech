@@ -74,7 +74,7 @@ enum TranscribeFileCommand {
                 }
                 print("turns: \(turns.map { String(format: "%.2f", $0) }.joined(separator: ", "))")
                 let pieces = segments.flatMap(\.tokens)
-                    .map { TimedSegment(start: $0.start, text: $0.text) }
+                    .map { TimedSegment(start: $0.start, end: $0.end, text: $0.text) }
                 cleaned = TranscriptCleaner.cleanPreservingLines(
                     SpeakerSplitter.merged(pieces: pieces, turnTimes: turns)) ?? ""
             }

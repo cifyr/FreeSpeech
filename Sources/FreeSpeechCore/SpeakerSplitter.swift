@@ -2,10 +2,12 @@ import Foundation
 
 public struct TimedSegment: Equatable {
     public let start: Double
+    public let end: Double?
     public let text: String
 
-    public init(start: Double, text: String) {
+    public init(start: Double, end: Double? = nil, text: String) {
         self.start = start
+        self.end = end
         self.text = text
     }
 }
@@ -31,18 +33,39 @@ public enum SpeakerSplitter {
         var pendingTurn = false
         var out = ""
         for piece in pieces {
-            while turnIndex < turns.count, turns[turnIndex] <= piece.start + tolerance {
-                pendingTurn = true
-                turnIndex += 1
+            let pieceEnd = max(piece.end ?? piece.start, piece.start)
+            let midpoint = piece.start + (pieceEnd - piece.start) / 2
+            let startsWord = piece.text.hasPrefix(" ")
+
+            // A diarizer timestamp just after a word starts may be clock drift.
+            // Only move that whole word to the new speaker when the turn is in
+            // its first half; turns in the second half belong after the word.
+            if startsWord {
+                while turnIndex < turns.count {
+                    let turn = turns[turnIndex]
+                    let beforePiece = turn <= piece.start
+                    let nearPieceStart = turn <= piece.start + tolerance && turn <= midpoint
+                    guard beforePiece || nearPieceStart else { break }
+                    pendingTurn = true
+                    turnIndex += 1
+                }
             }
+
             if out.isEmpty {
                 pendingTurn = false
                 out = String(piece.text.drop { $0 == " " })
-            } else if pendingTurn, piece.text.hasPrefix(" ") {
+            } else if pendingTurn, startsWord {
                 pendingTurn = false
-                out += "\n" + piece.text.dropFirst()
+                out += "\n" + String(piece.text.dropFirst())
             } else {
                 out += piece.text
+            }
+
+            // A turn inside (or immediately after) this token is applied at the
+            // next word boundary so the current word stays with its speaker.
+            while turnIndex < turns.count, turns[turnIndex] <= pieceEnd + tolerance {
+                pendingTurn = true
+                turnIndex += 1
             }
         }
         return capitalizeLineStarts(out)
