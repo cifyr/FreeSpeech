@@ -11,7 +11,8 @@ enum SettingsTab: String, CaseIterable {
     case general = "General"
     case audio = "Audio"
     case text = "Text"
-    case smarts = "Smarts"
+    case rewrite = "Rewrite"
+    case personalize = "Personalize"
 }
 
 final class SettingsStore: ObservableObject {
@@ -354,14 +355,17 @@ struct SettingsView: View {
                     case .general: generalTab
                     case .audio: audioTab
                     case .text: textTab
-                    case .smarts: smartsTab
+                    case .rewrite: rewriteTab
+                    case .personalize: personalizeTab
                     }
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)
             }
         }
-        .frame(width: 480, height: 640)
+        .frame(
+            minWidth: 520, idealWidth: 560, maxWidth: .infinity,
+            minHeight: 560, idealHeight: 680, maxHeight: .infinity)
         .background(Color.dsInk0)
         .onAppear { store.refresh() }
         .onDisappear { store.endShortcutCapture() }
@@ -399,14 +403,17 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var textTab: some View {
-        postProcessingCard
         dictationCard
         clipboardCard
         replacementCard
+    }
+
+    @ViewBuilder private var rewriteTab: some View {
+        postProcessingCard
         perAppCard
     }
 
-    @ViewBuilder private var smartsTab: some View {
+    @ViewBuilder private var personalizeTab: some View {
         vocabularyCard
         learningCard
         historyCard
@@ -477,6 +484,9 @@ struct SettingsView: View {
                             Text(mic.name)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.dsPaper)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(1)
                             Spacer()
                             if store.activeMicUID == mic.uid {
                                 tag("Active", color: .dsAccent)
@@ -662,11 +672,15 @@ struct SettingsView: View {
                             Text(rule.from)
                                 .font(.system(size: 13, design: .monospaced))
                                 .foregroundStyle(Color.dsMuted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                             Text("\u{2192}")
                                 .foregroundStyle(Color.dsFaint)
                             Text(rule.to)
                                 .font(.system(size: 13, design: .monospaced))
                                 .foregroundStyle(Color.dsPaper)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                             Spacer()
                             Button {
                                 store.removeReplacement(from: rule.from)
@@ -700,6 +714,9 @@ struct SettingsView: View {
                             Text(profile.appName)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.dsPaper)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .layoutPriority(1)
                             Spacer()
                             Text(profile.mode.displayName.uppercased())
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
@@ -777,11 +794,19 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                     sectionLabel("HUD position")
-                    HStack(spacing: 8) {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: 8),
+                            GridItem(.flexible(), spacing: 8),
+                        ],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
                         ForEach(HUDPosition.allCases, id: \.self) { position in
                             chip(position.displayName, selected: store.hudPosition == position) {
                                 store.hudPosition = position
                             }
+                            .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -899,8 +924,10 @@ struct SettingsView: View {
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
                 .kerning(0.8)
                 .foregroundStyle(capturing ? Color.dsAccent : Color.dsPaper)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .padding(.horizontal, 14)
-                .frame(height: 36)
+                .frame(minWidth: 112, maxWidth: .infinity, minHeight: 36, maxHeight: 36)
                 .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
@@ -909,7 +936,7 @@ struct SettingsView: View {
                 capturing ? store.endShortcutCapture() : store.beginShortcutCapture(for: target)
             }
             .buttonStyle(GhostButtonStyle())
-            Spacer()
+            .fixedSize()
         }
     }
 
@@ -919,7 +946,7 @@ struct SettingsView: View {
             .font(.system(size: 13))
             .foregroundStyle(Color.dsPaper)
             .padding(.horizontal, 12)
-            .frame(height: 36)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 36, maxHeight: 36)
             .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
@@ -935,6 +962,7 @@ struct SettingsView: View {
             .frame(height: 20)
             .background(Color.dsInk2, in: Capsule())
             .overlay(Capsule().strokeBorder(color.opacity(0.4), lineWidth: 1))
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -981,6 +1009,9 @@ struct SettingsView: View {
                             Text(title)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(disabled ? Color.dsFaint : Color.dsPaper)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(1)
                             if let badge { tag(badge, .dsAccent) }
                         }
                         Text(subtitle)
@@ -1035,11 +1066,16 @@ final class SettingsWindowController {
             let hosting = NSHostingController(
                 rootView: SettingsView(store: store, updates: store.updates))
             let w = NSWindow(contentViewController: hosting)
-            w.styleMask = [.titled, .closable, .fullSizeContentView]
+            w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+            w.title = "FreeSpeech Settings"
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.appearance = NSAppearance(named: .darkAqua)  // Greenlight is dark-only
             w.backgroundColor = DS.ink0
+            w.minSize = NSSize(width: 520, height: 560)
+            w.setContentSize(NSSize(width: 560, height: 680))
+            // Hidden titlebar leaves nothing to grab; drag anywhere instead.
+            w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
             w.center()
             window = w

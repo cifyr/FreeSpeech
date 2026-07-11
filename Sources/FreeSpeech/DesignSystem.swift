@@ -133,7 +133,10 @@ struct DSChip: View {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(selected ? Color.dsAccent : Color.dsPaper)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
                 .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity)
                 .frame(height: 32)
                 .background(hovering && !selected ? Color.dsInk3 : Color.dsInk2, in: Capsule())
                 .overlay(Capsule().strokeBorder(
@@ -167,6 +170,7 @@ struct DSTabButton: View {
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: DS.durBase), value: selected)
         .animation(.easeOut(duration: DS.durInstant), value: hovering)
