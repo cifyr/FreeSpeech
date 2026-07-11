@@ -8,6 +8,10 @@ enum Permissions {
         AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
+    static func microphoneDenied() -> Bool {
+        AVCaptureDevice.authorizationStatus(for: .audio) == .denied
+    }
+
     static func requestMicrophone(completion: @escaping (Bool) -> Void) {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         Log.info("microphone permission status: \(status.rawValue)")

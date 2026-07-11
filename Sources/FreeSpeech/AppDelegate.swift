@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let postProcessor = PostProcessor()
     private let modelDownloader = ModelDownloader()
     private let updateManager = UpdateManager()
+    private let permissionCoach = PermissionCoachController()
     private weak var onboardingStore: OnboardingStore?
     private let learningStore = LearningStore(fileURL: AppPaths.learningFile)
     private let historyStore = HistoryStore(fileURL: AppPaths.historyFile)
@@ -69,11 +70,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { fatalError("onboarding store requested after teardown") }
             let store = OnboardingStore(settings: self.settings, deps: OnboardingDeps(
                 microphoneAuthorized: { Permissions.microphoneAuthorized() },
-                requestMicrophone: { completion in Permissions.requestMicrophone(completion: completion) },
+                requestMicrophone: { completion in
+                    Permissions.requestMicrophone { granted in
+                        // A previously-denied mic never re-prompts; guide the
+                        // user to the toggle instead of failing silently.
+                        if !granted, Permissions.microphoneDenied() {
+                            self.permissionCoach.show(.microphone)
+                        }
+                        completion(granted)
+                    }
+                },
                 accessibilityTrusted: { Permissions.accessibilityTrusted(promptIfNeeded: false) },
                 requestAccessibility: {
                     let trusted = Permissions.accessibilityTrusted(promptIfNeeded: true)
-                    if !trusted { Permissions.openAccessibilitySettings() }
+                    if !trusted { self.permissionCoach.show(.accessibility) }
                     return trusted
                 },
                 installHotkey: { self.installHotkey() },
@@ -167,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if onboarded {
             showError("Accessibility not granted — enable FreeSpeech in System Settings > Privacy & Security > Accessibility")
-            Permissions.openAccessibilitySettings()
+            permissionCoach.show(.accessibility)
         }
         // Poll until granted: AX trust can change at any time and there is no notification API.
         accessibilityPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -328,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch source {
         case .microphone:
             guard Permissions.microphoneAuthorized() else {
-                Permissions.openMicrophoneSettings()
+                permissionCoach.show(.microphone)
                 perform(machine.handle(.recordingFailed("Microphone not granted — enable FreeSpeech in System Settings > Privacy & Security > Microphone"), mode: settings.mode))
                 return
             }
@@ -346,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .systemAudio:
             // Screen Recording permission is requested lazily, only for this mode.
             guard Permissions.screenRecordingAuthorized(requestIfNeeded: true) else {
-                Permissions.openScreenRecordingSettings()
+                permissionCoach.show(.screenRecording)
                 perform(machine.handle(.recordingFailed(SystemAudioError.permissionDenied.errorDescription ?? "Screen Recording not granted"), mode: settings.mode))
                 return
             }
