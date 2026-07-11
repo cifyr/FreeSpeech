@@ -43,6 +43,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         registry.activateEnabledModules()
         installEventTapOrPollForAccessibility()
+
+        // Opening the app by hand means "show me FreeKit"; a login-item launch
+        // stays silent and just starts whatever tools are enabled. First-run
+        // onboarding keeps the stage to itself.
+        let onboardingWillShow = settings.moduleEnabled(id: ModuleCatalog.speech.id)
+            && !settings.hasCompletedOnboarding
+        if !Self.launchedAsLoginItem(), !onboardingWillShow {
+            controlCenter.show()
+        }
+    }
+
+    // Re-opening the running app (Finder, Dock, `open`) surfaces the control
+    // center — the agent has no windows of its own to restore.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows: Bool) -> Bool {
+        controlCenter.show()
+        return false
+    }
+
+    // Login-item launches carry the kAEOpenApplication event tagged with
+    // keyAELaunchedAsLogInItem ('lgit'); manual opens do not.
+    private static func launchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == kCoreEventClass,
+              event.eventID == kAEOpenApplication else { return false }
+        let keyAEPropDataCode = AEKeyword(0x7072_6474)      // 'prdt'
+        let launchedAsLogInItem: OSType = 0x6C67_6974       // 'lgit'
+        return event.paramDescriptor(forKeyword: keyAEPropDataCode)?
+            .enumCodeValue == launchedAsLogInItem
     }
 
     func applicationWillTerminate(_ notification: Notification) {
