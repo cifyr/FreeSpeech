@@ -164,6 +164,33 @@ final class ClopPlanTests: XCTestCase {
         XCTAssertEqual(backup.path, "/tmp/clop-backups/deck 2.pdf")
     }
 
+    // MARK: - Format and density rules
+
+    func testJPEGPolicyFallsBackToKeepForTransparentSources() {
+        XCTAssertEqual(ClopPlan.effectiveFormat(policy: .jpeg, sourceHasAlpha: true), .keep)
+        XCTAssertEqual(ClopPlan.effectiveFormat(policy: .jpeg, sourceHasAlpha: false), .jpeg)
+    }
+
+    func testAlphaCapableFormatsIgnoreTransparency() {
+        XCTAssertEqual(ClopPlan.effectiveFormat(policy: .heic, sourceHasAlpha: true), .heic)
+        XCTAssertEqual(ClopPlan.effectiveFormat(policy: .keep, sourceHasAlpha: true), .keep)
+    }
+
+    func testDensityScalesWithDownscale() {
+        XCTAssertEqual(ClopPlan.scaledDensity(sourceDensity: 144, sourceWidth: 3000,
+                                              targetWidth: 1440)!,
+                       69.12, accuracy: 1e-9)
+        XCTAssertEqual(ClopPlan.scaledDensity(sourceDensity: 144, sourceWidth: 3000,
+                                              targetWidth: 3000)!,
+                       144, accuracy: 1e-9)
+    }
+
+    func testDensityRejectsDegenerateInputs() {
+        XCTAssertNil(ClopPlan.scaledDensity(sourceDensity: 0, sourceWidth: 100, targetWidth: 50))
+        XCTAssertNil(ClopPlan.scaledDensity(sourceDensity: 72, sourceWidth: 0, targetWidth: 50))
+        XCTAssertNil(ClopPlan.scaledDensity(sourceDensity: 72, sourceWidth: 100, targetWidth: 0))
+    }
+
     // MARK: - Savings summary
 
     func testSavingsSummaryFormatsBytesAndPercent() {
@@ -175,5 +202,14 @@ final class ClopPlanTests: XCTestCase {
     func testSavingsSummaryNeverGoesNegative() {
         let summary = ClopPlan.savingsSummary(originalBytes: 100, optimizedBytes: 200)
         XCTAssertEqual(summary, "Saved 0 B (0%)")
+    }
+
+    func testTotalSummaryPluralizesAndClamps() {
+        XCTAssertEqual(ClopPlan.totalSummary(savedBytes: 1024, items: 1),
+                       "Saved 1 KB total across 1 item")
+        XCTAssertEqual(ClopPlan.totalSummary(savedBytes: 3_145_728, items: 7),
+                       "Saved 3 MB total across 7 items")
+        XCTAssertEqual(ClopPlan.totalSummary(savedBytes: -50, items: -2),
+                       "Saved 0 B total across 0 items")
     }
 }

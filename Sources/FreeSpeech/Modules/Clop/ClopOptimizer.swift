@@ -107,8 +107,16 @@ enum ClopOptimizer {
             throw ClopError.unreadableImage(
                 detail: "decode failed, \(width)x\(height) \(sourceType?.identifier ?? "unknown type")")
         }
+        // The transparency scan is only paid when the answer can change the
+        // outcome, i.e. when the policy would convert to JPEG.
+        let sourceHasAlpha = plan.outputFormat == .jpeg && hasTransparentPixels(cgImage)
+        let format = ClopPlan.effectiveFormat(policy: plan.outputFormat,
+                                              sourceHasAlpha: sourceHasAlpha)
+        if format != plan.outputFormat {
+            Log.info("clop: transparent image keeps its format (JPEG would matte alpha onto a solid background)")
+        }
         let outputType: UTType
-        switch plan.outputFormat {
+        switch format {
         case .jpeg: outputType = .jpeg
         case .heic: outputType = .heic
         case .keep: outputType = sourceType ?? .png
@@ -118,17 +126,64 @@ enum ClopOptimizer {
             out, outputType.identifier as CFString, 1, nil) else {
             throw ClopError.encodeFailed(format: outputType.identifier, detail: "no encoder for type")
         }
-        // Only the quality key is passed: not copying the source properties is
-        // what strips EXIF/GPS, and stripped metadata is part of the contract.
-        let encodeOptions: [CFString: Any] = [
+        // Only quality and density are passed: not copying the source
+        // properties is what strips EXIF/GPS, and stripped metadata is part of
+        // the contract. Density is re-derived (scaled by the downscale factor)
+        // because dropping it makes Retina screenshots paste at twice their size.
+        var encodeOptions: [CFString: Any] = [
             kCGImageDestinationLossyCompressionQuality: plan.quality,
         ]
+        if let sourceDPI = properties?[kCGImagePropertyDPIWidth] as? Double,
+           let scaled = ClopPlan.scaledDensity(sourceDensity: sourceDPI, sourceWidth: width,
+                                               targetWidth: cgImage.width) {
+            encodeOptions[kCGImagePropertyDPIWidth] = scaled
+            encodeOptions[kCGImagePropertyDPIHeight] =
+                (properties?[kCGImagePropertyDPIHeight] as? Double).flatMap {
+                    ClopPlan.scaledDensity(sourceDensity: $0, sourceWidth: width,
+                                           targetWidth: cgImage.width)
+                } ?? scaled
+        }
         CGImageDestinationAddImage(destination, cgImage, encodeOptions as CFDictionary)
         guard CGImageDestinationFinalize(destination), out.length > 0 else {
             throw ClopError.encodeFailed(format: outputType.identifier, detail: "finalize failed")
         }
         return ImageResult(data: out as Data, type: outputType,
                            pixelWidth: cgImage.width, pixelHeight: cgImage.height)
+    }
+
+    // An alpha channel in the pixel format does not mean actual transparency
+    // (opaque PNG screenshots usually carry one), so the real coverage is
+    // scanned on the already-downscaled image. Values just under 255 count as
+    // opaque: resampling jitter should not defeat JPEG conversion.
+    private static func hasTransparentPixels(_ image: CGImage) -> Bool {
+        switch image.alphaInfo {
+        case .none, .noneSkipFirst, .noneSkipLast:
+            return false
+        default:
+            break
+        }
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            // Unverifiable coverage assumes transparency: keeping the source
+            // format is the direction that cannot destroy anything.
+            return true
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return true }
+        let buffer = data.assumingMemoryBound(to: UInt8.self)
+        // RGBA8 layout puts alpha at every fourth byte.
+        for row in 0..<height {
+            let base = row * context.bytesPerRow
+            for column in 0..<width where buffer[base + column * 4 + 3] < 250 {
+                return true
+            }
+        }
+        return false
     }
 
     static func optimizePDF(_ data: Data) throws -> Data {
@@ -145,17 +200,17 @@ enum ClopOptimizer {
         return optimized
     }
 
-    // Exports to a temp file the caller owns (moves into place or deletes).
-    // Progress lands on the main queue for the menu-bar readout.
-    static func optimizeVideo(at url: URL, preset: String,
+    // Exports to a caller-chosen temp URL the caller owns (moves into place or
+    // deletes). Cancelling the surrounding task cancels the export. Progress
+    // lands on the main queue for the menu-bar readout.
+    static func optimizeVideo(at url: URL, preset: String, outputURL: URL,
                               onProgress: @escaping (Double) -> Void) async throws -> URL {
         let asset = AVURLAsset(url: url)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
             throw ClopError.exportPresetUnsupported(preset: preset, file: url.lastPathComponent)
         }
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("clop-\(UUID().uuidString)")
-            .appendingPathExtension("mp4")
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         Log.info("clop: video export start \(url.lastPathComponent) preset=\(preset)")
         let monitor = Task {
             for await state in session.states(updateInterval: 0.5) {
@@ -168,9 +223,26 @@ enum ClopOptimizer {
         defer { monitor.cancel() }
         do {
             try await session.export(to: outputURL, as: .mp4)
+        } catch is CancellationError {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw CancellationError()
         } catch {
             throw ClopError.exportFailed(file: url.lastPathComponent, underlying: error)
         }
         return outputURL
+    }
+
+    // Temp home for clipboard video exports: the file URL lands on the
+    // pasteboard, so its name is what the user sees when pasting into Finder.
+    static func clipboardVideoOutputURL(for source: URL) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("clop-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("\(source.deletingPathExtension().lastPathComponent) (clopped).mp4")
+    }
+
+    static func batchVideoOutputURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("clop-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
     }
 }

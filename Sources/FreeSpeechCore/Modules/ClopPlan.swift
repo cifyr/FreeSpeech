@@ -156,6 +156,29 @@ public struct ClopPlan: Equatable {
         }
     }
 
+    // JPEG cannot store alpha, so converting a transparent image would matte
+    // it onto a solid background (window screenshots carry alpha shadows).
+    // Transparent sources keep their own format instead; HEIC keeps alpha and
+    // needs no fallback.
+    public static func effectiveFormat(policy: OutputFormat,
+                                       sourceHasAlpha: Bool) -> OutputFormat {
+        policy == .jpeg && sourceHasAlpha ? .keep : policy
+    }
+
+    // Pixel density must scale with any downscale or the pasted image changes
+    // its point size: a 144dpi Retina screenshot halved to 72dpi keeps the
+    // same on-screen bounds. nil means the source had no usable density.
+    public static func scaledDensity(sourceDensity: Double, sourceWidth: Int,
+                                     targetWidth: Int) -> Double? {
+        guard sourceDensity > 0, sourceWidth > 0, targetWidth > 0 else { return nil }
+        return sourceDensity * Double(targetWidth) / Double(sourceWidth)
+    }
+
+    public static func totalSummary(savedBytes: Int, items: Int) -> String {
+        let count = max(0, items)
+        return "Saved \(StatsFormatting.bytes(Double(max(0, savedBytes)))) total across \(count) item\(count == 1 ? "" : "s")"
+    }
+
     public static func savingsSummary(originalBytes: Int, optimizedBytes: Int) -> String {
         let saved = max(0, originalBytes - optimizedBytes)
         let fraction = originalBytes > 0 ? Double(saved) / Double(originalBytes) : 0

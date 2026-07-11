@@ -26,6 +26,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private var lastOwnChangeCount = -1
     private var lastResult: String?
     private var lastUndo: UndoAction?
+    // Cancellable long-running work (video exports, file batches). Image and
+    // PDF encodes finish in well under a second and are not worth cancelling.
+    private var runningTasks: [UUID: Task<Void, Never>] = [:]
+    private var batchProgress: (done: Int, total: Int)?
     private let paneModel = ClopPaneModel()
     private lazy var settingsWindow = ModuleSettingsWindowController(
         info: info,
@@ -46,6 +50,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         static let skipBelowKB = "skipBelowKB"
         static let destination = "destination"
         static let videoPreset = "videoPreset"
+        static let totalSavedBytes = "totalSavedBytes"
+        static let totalItems = "totalItems"
     }
 
     private enum UndoAction {
@@ -108,6 +114,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     func deactivate() {
         active = false
         stopPolling()
+        cancelAllWork()
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
         Log.info("clop: deactivated")
@@ -117,10 +124,16 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         if visible {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.button?.toolTip = "Clop compressor"
-                // Seam for a future drop zone: a registerForDraggedTypes view
-                // layered on item.button could feed dropped files into
-                // optimizeFiles(_:) without touching the menu flow.
+                item.button?.toolTip = "Clop compressor \u{2014} drop files here to optimize"
+                if let button = item.button {
+                    let drop = ClopDropView(frame: button.bounds)
+                    drop.autoresizingMask = [.width, .height]
+                    drop.onDrop = { [weak self] urls in
+                        Log.info("clop: \(urls.count) file(s) dropped on menu bar item")
+                        self?.optimizeFiles(urls)
+                    }
+                    button.addSubview(drop)
+                }
                 let menu = NSMenu()
                 menu.delegate = self
                 item.menu = menu
@@ -155,6 +168,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         // clipboard when watching started stays untouched.
         lastSeenChangeCount = NSPasteboard.general.changeCount
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
+        // Coalescing latitude for the power manager; sub-100ms jitter is
+        // invisible next to the 0.5s poll interval.
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
     }
@@ -259,27 +275,25 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     private func optimize(_ candidate: ClipboardCandidate, plan: ClopPlan,
                           pasteboard: NSPasteboard, changeCount: Int) {
+        // File payloads are read inside the background encode block so a large
+        // file on a slow (or still-downloading iCloud) volume never stalls the
+        // main thread.
         switch (candidate.payload, candidate.mediaType) {
         case (.data(let data, let type), .image):
-            optimizeImageForClipboard(data: data, sourceType: type, originalBytes: candidate.byteCount,
+            optimizeImageForClipboard(load: { data }, sourceType: type,
+                                      originalBytes: candidate.byteCount,
                                       plan: plan, pasteboard: pasteboard, changeCount: changeCount)
         case (.file(let url), .image):
-            guard let data = try? Data(contentsOf: url) else {
-                Log.error("clop: could not read image file \(url.path)")
-                return
-            }
-            optimizeImageForClipboard(data: data, sourceType: nil, originalBytes: candidate.byteCount,
+            optimizeImageForClipboard(load: { try Data(contentsOf: url) }, sourceType: nil,
+                                      originalBytes: candidate.byteCount,
                                       plan: plan, pasteboard: pasteboard, changeCount: changeCount)
         case (.data(let data, _), .pdf):
-            optimizePDFForClipboard(data: data, plan: plan,
-                                    pasteboard: pasteboard, changeCount: changeCount)
+            optimizePDFForClipboard(load: { data }, originalBytes: candidate.byteCount,
+                                    plan: plan, pasteboard: pasteboard, changeCount: changeCount)
         case (.file(let url), .pdf):
-            guard let data = try? Data(contentsOf: url) else {
-                Log.error("clop: could not read PDF file \(url.path)")
-                return
-            }
-            optimizePDFForClipboard(data: data, plan: plan,
-                                    pasteboard: pasteboard, changeCount: changeCount)
+            optimizePDFForClipboard(load: { try Data(contentsOf: url) },
+                                    originalBytes: candidate.byteCount,
+                                    plan: plan, pasteboard: pasteboard, changeCount: changeCount)
         case (.file(let url), .video):
             optimizeVideoForClipboard(url: url, originalBytes: candidate.byteCount,
                                       plan: plan, pasteboard: pasteboard, changeCount: changeCount)
@@ -289,12 +303,13 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    private func optimizeImageForClipboard(data: Data, sourceType: UTType?, originalBytes: Int,
+    private func optimizeImageForClipboard(load: @escaping () throws -> Data,
+                                           sourceType: UTType?, originalBytes: Int,
                                            plan: ClopPlan, pasteboard: NSPasteboard,
                                            changeCount: Int) {
         beginWork()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome = Result { try ClopOptimizer.optimizeImage(data, plan: plan, sourceHint: sourceType) }
+            let outcome = Result { try ClopOptimizer.optimizeImage(load(), plan: plan, sourceHint: sourceType) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.endWork()
@@ -312,12 +327,12 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    private func optimizePDFForClipboard(data: Data, plan: ClopPlan,
+    private func optimizePDFForClipboard(load: @escaping () throws -> Data, originalBytes: Int,
+                                         plan: ClopPlan,
                                          pasteboard: NSPasteboard, changeCount: Int) {
-        let originalBytes = data.count
         beginWork()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome = Result { try ClopOptimizer.optimizePDF(data) }
+            let outcome = Result { try ClopOptimizer.optimizePDF(load()) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.endWork()
@@ -339,10 +354,12 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                                            pasteboard: NSPasteboard, changeCount: Int) {
         beginWork()
         let preset = videoPreset.avPreset
-        Task { @MainActor in
+        runTracked { [self] in
             defer { self.endWork() }
             do {
-                let outputURL = try await ClopOptimizer.optimizeVideo(at: url, preset: preset) { [weak self] fraction in
+                let outputURL = try await ClopOptimizer.optimizeVideo(
+                    at: url, preset: preset,
+                    outputURL: ClopOptimizer.clipboardVideoOutputURL(for: url)) { [weak self] fraction in
                     self?.videoProgress = fraction
                     self?.updateStatusIcon()
                 }
@@ -363,9 +380,13 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 pasteboard.writeObjects([outputURL as NSURL])
                 self.rememberOwnWrite(pasteboard)
                 self.lastUndo = .clipboard(snapshot)
+                self.recordSavings(originalBytes: originalBytes, optimizedBytes: optimizedBytes, items: 1)
                 let summary = ClopPlan.savingsSummary(originalBytes: originalBytes, optimizedBytes: optimizedBytes)
                 Log.info("clop: clipboard video optimized, \(summary)")
                 self.finish(result: summary)
+            } catch is CancellationError {
+                Log.info("clop: clipboard video optimization cancelled")
+                self.finish(result: "Optimization cancelled")
             } catch {
                 Log.error("clop: video optimization failed for \(url.lastPathComponent): \(error.localizedDescription)")
                 self.finish(result: "Could not optimize \(url.lastPathComponent)")
@@ -391,6 +412,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         pasteboard.setData(data, forType: NSPasteboard.PasteboardType(type.identifier))
         rememberOwnWrite(pasteboard)
         lastUndo = .clipboard(snapshot)
+        recordSavings(originalBytes: originalBytes, optimizedBytes: data.count, items: 1)
         let summary = ClopPlan.savingsSummary(originalBytes: originalBytes, optimizedBytes: data.count)
         Log.info("clop: clipboard optimized, \(summary)")
         finish(result: summary)
@@ -450,13 +472,22 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         let plan = Self.currentPlan(settings: settings)
         let preset = videoPreset.avPreset
         Log.info("clop: optimizing \(urls.count) file(s), destination=\(plan.fileDestination.rawValue)")
-        Task { @MainActor in
+        runTracked { [self] in
             beginWork()
             var optimizedCount = 0
             var skipped = 0
+            var cancelled = false
             var totalOriginal = 0
             var totalOptimized = 0
-            for url in urls {
+            for (index, url) in urls.enumerated() {
+                if Task.isCancelled {
+                    skipped += urls.count - index
+                    cancelled = true
+                    Log.info("clop: batch cancelled after \(index) of \(urls.count) file(s)")
+                    break
+                }
+                batchProgress = (index, urls.count)
+                updateStatusIcon()
                 do {
                     if let sizes = try await optimizeFile(url, plan: plan, preset: preset) {
                         optimizedCount += 1
@@ -465,14 +496,25 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                     } else {
                         skipped += 1
                     }
+                } catch is CancellationError {
+                    skipped += urls.count - index
+                    cancelled = true
+                    Log.info("clop: batch cancelled during \(url.lastPathComponent)")
+                    break
                 } catch {
                     skipped += 1
                     Log.error("clop: file optimization failed for \(url.path): \(error.localizedDescription)")
                 }
             }
             endWork()
-            let summary: String
             if optimizedCount > 0 {
+                recordSavings(originalBytes: totalOriginal, optimizedBytes: totalOptimized,
+                              items: optimizedCount)
+            }
+            let summary: String
+            if cancelled {
+                summary = "Cancelled \u{2014} \(optimizedCount) file\(optimizedCount == 1 ? "" : "s") done first"
+            } else if optimizedCount > 0 {
                 let counts = "\(optimizedCount) file\(optimizedCount == 1 ? "" : "s")"
                     + (skipped > 0 ? ", \(skipped) skipped" : "")
                 summary = "\(ClopPlan.savingsSummary(originalBytes: totalOriginal, optimizedBytes: totalOptimized)) \u{2014} \(counts)"
@@ -500,10 +542,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             // replace runs always keep the original encoding.
             var filePlan = plan
             if plan.fileDestination == .replace { filePlan.outputFormat = .keep }
-            let data = try Data(contentsOf: url)
             let encodePlan = filePlan
             let result = try await Task.detached(priority: .userInitiated) {
-                try ClopOptimizer.optimizeImage(data, plan: encodePlan)
+                try ClopOptimizer.optimizeImage(Data(contentsOf: url), plan: encodePlan)
             }.value
             guard plan.keepResult(originalBytes: originalBytes, optimizedBytes: result.data.count) else {
                 Log.info("clop: \(url.lastPathComponent) not smaller (\(originalBytes) -> \(result.data.count) bytes), skipped")
@@ -513,9 +554,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             try writeFileResult(data: result.data, for: url, plan: plan, preferredExtension: ext)
             return (originalBytes, result.data.count)
         case .pdf:
-            let data = try Data(contentsOf: url)
             let optimized = try await Task.detached(priority: .userInitiated) {
-                try ClopOptimizer.optimizePDF(data)
+                try ClopOptimizer.optimizePDF(Data(contentsOf: url))
             }.value
             guard plan.keepResult(originalBytes: originalBytes, optimizedBytes: optimized.count) else {
                 Log.info("clop: \(url.lastPathComponent) not smaller (\(originalBytes) -> \(optimized.count) bytes), skipped")
@@ -524,7 +564,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             try writeFileResult(data: optimized, for: url, plan: plan, preferredExtension: "pdf")
             return (originalBytes, optimized.count)
         case .video:
-            let outputURL = try await ClopOptimizer.optimizeVideo(at: url, preset: preset) { [weak self] fraction in
+            let outputURL = try await ClopOptimizer.optimizeVideo(
+                at: url, preset: preset,
+                outputURL: ClopOptimizer.batchVideoOutputURL()) { [weak self] fraction in
                 self?.videoProgress = fraction
                 self?.updateStatusIcon()
             }
@@ -591,6 +633,38 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0
     }
 
+    func revealBackupsFolder() {
+        let directory = Self.backupsDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(directory)
+        Log.info("clop: opened backups folder \(directory.path)")
+    }
+
+    // MARK: - Work tracking
+
+    private func runTracked(_ operation: @escaping @MainActor () async -> Void) {
+        let id = UUID()
+        runningTasks[id] = Task { @MainActor in
+            await operation()
+            runningTasks[id] = nil
+        }
+    }
+
+    func cancelAllWork() {
+        guard !runningTasks.isEmpty else { return }
+        Log.info("clop: cancelling \(runningTasks.count) running task(s)")
+        for task in runningTasks.values { task.cancel() }
+    }
+
+    // Lifetime savings counter persists in Settings so it survives relaunches.
+    private func recordSavings(originalBytes: Int, optimizedBytes: Int, items: Int) {
+        let saved = max(0, originalBytes - optimizedBytes)
+        let total = (settings.moduleInt(id: info.id, key: Key.totalSavedBytes) ?? 0) + saved
+        let count = (settings.moduleInt(id: info.id, key: Key.totalItems) ?? 0) + items
+        settings.setModuleInt(total, id: info.id, key: Key.totalSavedBytes)
+        settings.setModuleInt(count, id: info.id, key: Key.totalItems)
+    }
+
     // MARK: - Status item
 
     private func beginWork() {
@@ -600,7 +674,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     private func endWork() {
         working = max(0, working - 1)
-        if working == 0 { videoProgress = nil }
+        if working == 0 {
+            videoProgress = nil
+            batchProgress = nil
+        }
         updateStatusIcon()
     }
 
@@ -619,9 +696,14 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         // Accent tint = live activity, matching the suite's use of red for "hot".
         button.contentTintColor = working > 0 ? DS.accent : nil
         button.appearsDisabled = paused
-        let progressText = working > 0
-            ? (videoProgress.map { String(format: " %.0f%%", $0 * 100) } ?? "")
-            : ""
+        let progressText: String
+        if working > 0, let batch = batchProgress {
+            progressText = " \(batch.done + 1)/\(batch.total)"
+        } else if working > 0, let videoProgress {
+            progressText = String(format: " %.0f%%", videoProgress * 100)
+        } else {
+            progressText = ""
+        }
         button.attributedTitle = NSAttributedString(
             string: progressText,
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
@@ -635,7 +717,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         menu.removeAllItems()
         menu.autoenablesItems = false
         let statusTitle: String
-        if working > 0 {
+        if working > 0, let batch = batchProgress {
+            statusTitle = "Optimizing \(batch.done + 1) of \(batch.total)\u{2026}"
+        } else if working > 0 {
             statusTitle = videoProgress.map { String(format: "Optimizing video \u{2014} %.0f%%", $0 * 100) }
                 ?? "Optimizing\u{2026}"
         } else {
@@ -649,7 +733,23 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             last.isEnabled = false
             menu.addItem(last)
         }
+        let totalSaved = settings.moduleInt(id: info.id, key: Key.totalSavedBytes) ?? 0
+        if totalSaved > 0 {
+            let total = NSMenuItem(
+                title: ClopPlan.totalSummary(
+                    savedBytes: totalSaved,
+                    items: settings.moduleInt(id: info.id, key: Key.totalItems) ?? 0),
+                action: nil, keyEquivalent: "")
+            total.isEnabled = false
+            menu.addItem(total)
+        }
         menu.addItem(.separator())
+        if working > 0 {
+            let cancel = NSMenuItem(
+                title: "Cancel Optimization", action: #selector(menuCancelWork), keyEquivalent: "")
+            cancel.target = self
+            menu.addItem(cancel)
+        }
         let pause = NSMenuItem(
             title: watching ? "Pause Watching" : "Resume Watching",
             action: #selector(menuTogglePause), keyEquivalent: "")
@@ -694,8 +794,48 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         undoLastOptimization()
     }
 
+    @objc private func menuCancelWork() {
+        cancelAllWork()
+    }
+
     @objc private func menuOpenSettings() {
         openSettings()
+    }
+}
+
+// Transparent overlay on the status-item button that accepts file drags.
+// hitTest returns nil so clicks fall through to the button and its menu; drag
+// destination lookup goes by registered types, not hitTest, so drops still land.
+private final class ClopDropView: NSView {
+    var onDrop: (([URL]) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        supportedURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = supportedURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        onDrop?(urls)
+        return true
+    }
+
+    private func supportedURLs(from info: NSDraggingInfo) -> [URL] {
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter { ClopOptimizer.mediaType(forFileExtension: $0.pathExtension) != nil }
     }
 }
 
@@ -822,7 +962,7 @@ private struct ClopSettingsPane: View {
                         }
                     }
                 }
-                Text("JPEG pastes everywhere; HEIC is smaller but some apps reject it. Replace-in-place file runs always keep the original format.")
+                Text("JPEG pastes everywhere; HEIC is smaller but some apps reject it. Transparent images keep their own format so JPEG never mattes them onto a solid background. Replace-in-place file runs always keep the original format.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
             }
@@ -868,9 +1008,11 @@ private struct ClopSettingsPane: View {
                         }
                     }
                 }
-                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replaced files are backed up to Application Support/FreeSpeech/clop-backups first.")
+                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replaced files are backed up first. Files can also be dropped straight onto the menu bar icon.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
+                Button("Show Backup Folder") { model.module?.revealBackupsFolder() }
+                    .buttonStyle(GhostButtonStyle())
             }
 
             DSSettingsCard(title: "Control") {
