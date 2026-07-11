@@ -315,6 +315,10 @@ final class NotebookViewModel: ObservableObject {
     @Published var query: String = "" { didSet { refresh() } }
     @Published private(set) var notes: [Note] = []
     @Published var selectedID: UUID?
+    // The dedicated header field; empty falls back to the first content line.
+    @Published var editedTitle: String = "" {
+        didSet { if editedTitle != oldValue { titleChanged() } }
+    }
     // Bumped when the editor must reload its content (selection change).
     @Published private(set) var loadGeneration = 0
     private(set) var loadedText = NSAttributedString()
@@ -325,6 +329,8 @@ final class NotebookViewModel: ObservableObject {
     let openSettings: () -> Void
     private var saveTimer: Timer?
     private var pendingSave: (id: UUID, text: NSAttributedString)?
+    private var titleDirty = false
+    private var suppressTitleCallback = false
 
     init(store: NotebookStore, config: NotebookConfig, openSettings: @escaping () -> Void) {
         self.store = store
@@ -348,6 +354,9 @@ final class NotebookViewModel: ObservableObject {
         flushPendingSave()
         guard let note = store.note(id: id) else { return }
         selectedID = id
+        suppressTitleCallback = true
+        editedTitle = note.title
+        suppressTitleCallback = false
         loadedText = attributedText(from: note)
         loadGeneration += 1
     }
@@ -374,10 +383,23 @@ final class NotebookViewModel: ObservableObject {
         store.delete(id: id)
         if selectedID == id {
             selectedID = nil
+            suppressTitleCallback = true
+            editedTitle = ""
+            suppressTitleCallback = false
             loadedText = NSAttributedString()
             loadGeneration += 1
         }
         refresh()
+    }
+
+    private func titleChanged() {
+        guard !suppressTitleCallback, selectedID != nil else { return }
+        titleDirty = true
+        saveTimer?.invalidate()
+        saveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            self?.flushPendingSave()
+            self?.refresh()
+        }
     }
 
     // Debounced: every keystroke schedules, disk sees at most ~2 writes/second.
@@ -394,16 +416,26 @@ final class NotebookViewModel: ObservableObject {
     func flushPendingSave() {
         saveTimer?.invalidate()
         saveTimer = nil
-        guard let (id, text) = pendingSave else { return }
+        let saved = pendingSave
         pendingSave = nil
-        guard var note = store.note(id: id) else { return }
-        let plain = text.string
-        let firstLine = plain.split(separator: "\n", omittingEmptySubsequences: true)
-            .first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
-        note.title = String(firstLine.prefix(60))
-        note.plainText = plain
-        note.rich = text.rtf(
-            from: NSRange(location: 0, length: text.length), documentAttributes: [:])
+        let wasTitleDirty = titleDirty
+        titleDirty = false
+        guard saved != nil || wasTitleDirty else { return }
+        guard let id = saved?.id ?? selectedID, var note = store.note(id: id) else { return }
+        if let (_, text) = saved {
+            note.plainText = text.string
+            note.rich = text.rtf(
+                from: NSRange(location: 0, length: text.length), documentAttributes: [:])
+        }
+        // Explicit header wins; an empty header falls back to the first line.
+        let typed = editedTitle.trimmingCharacters(in: .whitespaces)
+        if typed.isEmpty {
+            let firstLine = note.plainText.split(separator: "\n", omittingEmptySubsequences: true)
+                .first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+            note.title = String(firstLine.prefix(60))
+        } else {
+            note.title = String(typed.prefix(60))
+        }
         note.modified = Date()
         store.upsert(note)
     }
@@ -430,6 +462,32 @@ struct NotebookView: View {
         return f
     }()
 
+    // Content colors are user data, not interface chrome, so the palette here
+    // deliberately goes beyond the DS accent (Google-Docs-style choice).
+    private static let textColors: [(NSColor, String)] = [
+        (DS.paper, "Paper"), (DS.muted, "Muted"), (.systemGray, "Gray"),
+        (DS.accent, "Red"), (.systemOrange, "Orange"), (.systemYellow, "Yellow"),
+        (.systemGreen, "Green"), (.systemMint, "Mint"), (.systemTeal, "Teal"),
+        (.systemBlue, "Blue"), (.systemIndigo, "Indigo"), (.systemPurple, "Purple"),
+        (.systemPink, "Pink"), (.systemBrown, "Brown"),
+    ]
+
+    private static let highlightColors: [(NSColor, String)] = [
+        (NSColor.systemYellow.withAlphaComponent(0.35), "Yellow"),
+        (NSColor.systemGreen.withAlphaComponent(0.35), "Green"),
+        (NSColor.systemBlue.withAlphaComponent(0.35), "Blue"),
+        (NSColor.systemPink.withAlphaComponent(0.35), "Pink"),
+        (NSColor.systemPurple.withAlphaComponent(0.35), "Purple"),
+        (DS.accent.withAlphaComponent(0.35), "Red"),
+    ]
+
+    private static let fontSizes: [Double] = [10, 12, 13, 14, 16, 18, 20, 24, 28]
+
+    @State private var showTextColors = false
+    @State private var showHighlights = false
+    @State private var showSizes = false
+    @State private var showOverflow = false
+
     var body: some View {
         HStack(spacing: 0) {
             if config.sidebarVisible {
@@ -438,8 +496,18 @@ struct NotebookView: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                toolbar
+                GeometryReader { geo in
+                    toolbar(width: geo.size.width)
+                }
+                .frame(height: 40)
                 Rectangle().fill(Color.dsLine).frame(height: 1)
+                TextField("Untitled", text: $model.editedTitle)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(Color.dsPaper)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 2)
                 RichTextEditor(model: model, proxy: editor)
             }
         }
@@ -489,88 +557,206 @@ struct NotebookView: View {
         .frame(width: 210)
     }
 
-    // Content colors are user data, not interface chrome, so the palette here
-    // deliberately goes beyond the DS accent (Google-Docs-style choice).
-    private static let textColors: [(NSColor, String)] = [
-        (DS.paper, "Paper"), (DS.muted, "Muted"), (.systemGray, "Gray"),
-        (DS.accent, "Red"), (.systemOrange, "Orange"), (.systemYellow, "Yellow"),
-        (.systemGreen, "Green"), (.systemMint, "Mint"), (.systemTeal, "Teal"),
-        (.systemBlue, "Blue"), (.systemIndigo, "Indigo"), (.systemPurple, "Purple"),
-        (.systemPink, "Pink"), (.systemBrown, "Brown"),
-    ]
+    // MARK: Adaptive one-line toolbar
 
-    private static let highlightColors: [(NSColor, String)] = [
-        (NSColor.systemYellow.withAlphaComponent(0.35), "Yellow"),
-        (NSColor.systemGreen.withAlphaComponent(0.35), "Green"),
-        (NSColor.systemBlue.withAlphaComponent(0.35), "Blue"),
-        (NSColor.systemPink.withAlphaComponent(0.35), "Pink"),
-        (NSColor.systemPurple.withAlphaComponent(0.35), "Purple"),
-        (DS.accent.withAlphaComponent(0.35), "Red"),
-    ]
+    // Display-ordered tool groups; lower keepPriority survives narrow widths
+    // longer. Whatever does not fit moves into the trailing ellipsis panel.
+    private enum ToolGroup: CaseIterable {
+        case headings, styles, colorTools, lists, alignment
 
-    private static let fontSizes: [Double] = [10, 12, 13, 14, 16, 18, 20, 24, 28]
-
-    @State private var showTextColors = false
-    @State private var showHighlights = false
-    @State private var showSizes = false
-
-    private var toolbar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                formatButton("sidebar.left", help: config.sidebarVisible ? "Hide sidebar" : "Show sidebar") {
-                    config.sidebarVisible.toggle()
-                }
-                Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
-                formatButton("textformat.size.larger", help: "Title") {
-                    editor.applyHeading(font: config.font(for: .title))
-                }
-                formatButton("textformat.size", help: "Heading") {
-                    editor.applyHeading(font: config.font(for: .heading))
-                }
-                formatButton("textformat", help: "Body text") {
-                    editor.applyHeading(font: config.font(for: .body))
-                }
-                Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
-                formatButton("bold", help: "Bold") { editor.toggleBold() }
-                formatButton("italic", help: "Italic") { editor.toggleItalic() }
-                formatButton("underline", help: "Underline") { editor.toggleUnderline() }
-                formatButton("strikethrough", help: "Strikethrough") { editor.toggleStrikethrough() }
-                Spacer()
-                formatButton("gearshape", help: "Notebook settings") { model.openSettings() }
+        var buttonCount: Int {
+            switch self {
+            case .headings: return 3
+            case .styles: return 4
+            case .colorTools: return 3
+            case .lists: return 2
+            case .alignment: return 3
             }
-            .padding(.horizontal, 14)
-            .frame(height: 38)
+        }
 
-            HStack(spacing: 6) {
-                formatButton("paintbrush.pointed", help: "Text color") { showTextColors.toggle() }
-                    .popover(isPresented: $showTextColors, arrowEdge: .bottom) {
-                        colorGrid(Self.textColors, clearTitle: nil) { color in
-                            editor.applyColor(color ?? DS.paper)
+        var keepPriority: Int {
+            switch self {
+            case .styles: return 0
+            case .headings: return 1
+            case .colorTools: return 2
+            case .lists: return 3
+            case .alignment: return 4
+            }
+        }
+
+        // Button width 28 + 6 spacing, plus the leading divider.
+        var width: CGFloat { CGFloat(buttonCount) * 34 + 13 }
+    }
+
+    private func visibleGroups(width: CGFloat) -> Set<ToolGroup> {
+        // Fixed occupants: padding, sidebar toggle, gear, overflow button slot.
+        var budget = width - 28 - 34 - 34 - 34
+        var kept: Set<ToolGroup> = []
+        for group in ToolGroup.allCases.sorted(by: { $0.keepPriority < $1.keepPriority }) {
+            if budget >= group.width {
+                kept.insert(group)
+                budget -= group.width
+            }
+        }
+        return kept
+    }
+
+    private func toolbar(width: CGFloat) -> some View {
+        let visible = visibleGroups(width: width)
+        let hidden = ToolGroup.allCases.filter { !visible.contains($0) }
+        return HStack(spacing: 6) {
+            formatButton("sidebar.left", help: config.sidebarVisible ? "Hide sidebar" : "Show sidebar") {
+                config.sidebarVisible.toggle()
+            }
+            ForEach(ToolGroup.allCases.filter { visible.contains($0) }, id: \.self) { group in
+                Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
+                inlineGroup(group)
+            }
+            Spacer(minLength: 4)
+            if !hidden.isEmpty {
+                formatButton("ellipsis", help: "More tools") { showOverflow.toggle() }
+                    .popover(isPresented: $showOverflow, arrowEdge: .bottom) {
+                        overflowPanel(groups: hidden)
+                    }
+            }
+            formatButton("gearshape", help: "Notebook settings") { model.openSettings() }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 40)
+    }
+
+    @ViewBuilder private func inlineGroup(_ group: ToolGroup) -> some View {
+        switch group {
+        case .headings:
+            headingButtons
+        case .styles:
+            styleButtons
+        case .colorTools:
+            formatButton("paintbrush.pointed", help: "Text color") { showTextColors.toggle() }
+                .popover(isPresented: $showTextColors, arrowEdge: .bottom) {
+                    colorGrid(Self.textColors, clearTitle: nil) { color in
+                        editor.applyColor(color ?? DS.paper)
+                    }
+                }
+            formatButton("highlighter", help: "Highlight") { showHighlights.toggle() }
+                .popover(isPresented: $showHighlights, arrowEdge: .bottom) {
+                    colorGrid(Self.highlightColors, clearTitle: "None") { color in
+                        editor.applyHighlight(color)
+                    }
+                }
+            formatButton("textformat.size.smaller", help: "Text size") { showSizes.toggle() }
+                .popover(isPresented: $showSizes, arrowEdge: .bottom) {
+                    sizeList { showSizes = false }
+                }
+        case .lists:
+            listButtons
+        case .alignment:
+            alignmentButtons
+        }
+    }
+
+    // The overflow panel expands popover-style tools inline: nesting popovers
+    // inside a popover is fragile on macOS.
+    private func overflowPanel(groups: [ToolGroup]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(groups, id: \.self) { group in
+                switch group {
+                case .headings:
+                    HStack(spacing: 6) { headingButtons }
+                case .styles:
+                    HStack(spacing: 6) { styleButtons }
+                case .colorTools:
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TEXT COLOR")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .kerning(1.0)
+                            .foregroundStyle(Color.dsFaint)
+                        swatchRow(Self.textColors) { editor.applyColor($0 ?? DS.paper) }
+                        Text("HIGHLIGHT")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .kerning(1.0)
+                            .foregroundStyle(Color.dsFaint)
+                        HStack(spacing: 6) {
+                            swatchRow(Self.highlightColors) { editor.applyHighlight($0) }
+                            Button("None") { editor.applyHighlight(nil) }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.dsMuted)
+                        }
+                        Text("SIZE")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .kerning(1.0)
+                            .foregroundStyle(Color.dsFaint)
+                        HStack(spacing: 4) {
+                            ForEach(Self.fontSizes, id: \.self) { size in
+                                Button("\(Int(size))") { editor.applyFontSize(size) }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color.dsPaper)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 3)
+                                    .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: 5))
+                            }
                         }
                     }
-                formatButton("highlighter", help: "Highlight") { showHighlights.toggle() }
-                    .popover(isPresented: $showHighlights, arrowEdge: .bottom) {
-                        colorGrid(Self.highlightColors, clearTitle: "None") { color in
-                            editor.applyHighlight(color)
-                        }
-                    }
-                formatButton("textformat.size.smaller", help: "Text size") { showSizes.toggle() }
-                    .popover(isPresented: $showSizes, arrowEdge: .bottom) {
-                        sizeGrid
-                    }
-                Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
-                formatButton("list.bullet", help: "Bullet list") { editor.toggleBullets() }
-                formatButton("rectangle.split.1x2", help: "Page split") {
-                    editor.insertDivider(bodyFont: config.font(for: .body))
+                case .lists:
+                    HStack(spacing: 6) { listButtons }
+                case .alignment:
+                    HStack(spacing: 6) { alignmentButtons }
                 }
-                Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
-                formatButton("text.alignleft", help: "Align left") { editor.applyAlignment(.left) }
-                formatButton("text.aligncenter", help: "Align center") { editor.applyAlignment(.center) }
-                formatButton("text.alignright", help: "Align right") { editor.applyAlignment(.right) }
-                Spacer()
             }
-            .padding(.horizontal, 14)
-            .frame(height: 38)
+        }
+        .padding(12)
+        .background(Color.dsInk1)
+    }
+
+    @ViewBuilder private var headingButtons: some View {
+        formatButton("textformat.size.larger", help: "Title") {
+            editor.applyHeading(font: config.font(for: .title))
+        }
+        formatButton("textformat.size", help: "Heading") {
+            editor.applyHeading(font: config.font(for: .heading))
+        }
+        formatButton("textformat", help: "Body text") {
+            editor.applyHeading(font: config.font(for: .body))
+        }
+    }
+
+    @ViewBuilder private var styleButtons: some View {
+        formatButton("bold", help: "Bold") { editor.toggleBold() }
+        formatButton("italic", help: "Italic") { editor.toggleItalic() }
+        formatButton("underline", help: "Underline") { editor.toggleUnderline() }
+        formatButton("strikethrough", help: "Strikethrough") { editor.toggleStrikethrough() }
+    }
+
+    @ViewBuilder private var listButtons: some View {
+        formatButton("list.bullet", help: "Bullet list") { editor.toggleBullets() }
+        formatButton("rectangle.split.1x2", help: "Page split") {
+            editor.insertDivider(bodyFont: config.font(for: .body))
+        }
+    }
+
+    @ViewBuilder private var alignmentButtons: some View {
+        formatButton("text.alignleft", help: "Align left") { editor.applyAlignment(.left) }
+        formatButton("text.aligncenter", help: "Align center") { editor.applyAlignment(.center) }
+        formatButton("text.alignright", help: "Align right") { editor.applyAlignment(.right) }
+    }
+
+    private func swatchRow(_ colors: [(NSColor, String)],
+                           onPick: @escaping (NSColor?) -> Void) -> some View {
+        HStack(spacing: 5) {
+            ForEach(Array(colors.enumerated()), id: \.offset) { _, entry in
+                Button {
+                    onPick(entry.0)
+                } label: {
+                    Circle()
+                        .fill(Color(nsColor: entry.0))
+                        .frame(width: 16, height: 16)
+                        .overlay(Circle().strokeBorder(Color.dsLine, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help(entry.1)
+            }
         }
     }
 
@@ -601,12 +787,12 @@ struct NotebookView: View {
         .background(Color.dsInk1)
     }
 
-    private var sizeGrid: some View {
+    private func sizeList(onPick: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(Self.fontSizes, id: \.self) { size in
                 Button {
                     editor.applyFontSize(size)
-                    showSizes = false
+                    onPick()
                 } label: {
                     Text("\(Int(size)) pt")
                         .font(.system(size: 12, design: .monospaced))
@@ -638,7 +824,6 @@ struct NotebookView: View {
         .buttonStyle(.plain)
         .help(help)
     }
-
 }
 
 private struct NoteRow: View {
@@ -704,26 +889,6 @@ private struct NotebookSettingsPane: View {
                         }
                     }
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                DSSectionLabel("Text size")
-                HStack(spacing: 8) {
-                    ForEach([11.0, 13.0, 15.0, 17.0], id: \.self) { size in
-                        DSChip(title: "\(Int(size)) pt", selected: config.fontSize == size) {
-                            config.fontSize = size
-                        }
-                    }
-                    DSNumberField(
-                        placeholder: "pt",
-                        value: $config.fontSize,
-                        range: 9...32,
-                        fractionDigits: 0,
-                        onCommit: { config.fontSize = $0 })
-                }
-                Text("Applies to new text; existing notes keep their styling.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -929,24 +1094,42 @@ final class RichTextEditorProxy: ObservableObject {
 
     // Page split: a faint full-line rule as literal text, so it survives the
     // RTF round-trip without RTFD attachments.
+    // Page split: an empty paragraph carrying a full-width NSTextTableBlock
+    // whose only border is a bottom hairline. The block's 100% width tracks the
+    // window as it resizes, and table blocks round-trip through RTF.
     func insertDivider(bodyFont: NSFont) {
         guard let tv = textView, let storage = tv.textStorage else { return }
         let insertAt = tv.selectedRange().location
         let text = storage.string as NSString
         let atLineStart = insertAt == 0 || text.character(at: insertAt - 1) == 0x0A
-        let rule = String(repeating: "\u{2500}", count: 32)
-        let divider = NSMutableAttributedString(
-            string: (atLineStart ? "" : "\n") + rule + "\n",
-            attributes: [
-                .font: bodyFont,
-                .foregroundColor: DS.faint,
-            ])
+
+        let table = NSTextTable()
+        table.numberOfColumns = 1
+        let block = NSTextTableBlock(
+            table: table, startingRow: 0, rowSpan: 1, startingColumn: 0, columnSpan: 1)
+        block.setBorderColor(DS.faint)
+        block.setWidth(0, type: .absoluteValueType, for: .border)
+        block.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
+        block.setWidth(3, type: .absoluteValueType, for: .padding)
+        let style = NSMutableParagraphStyle()
+        style.textBlocks = [block]
+
+        let divider = NSMutableAttributedString()
+        if !atLineStart {
+            divider.append(NSAttributedString(string: "\n", attributes: [.font: bodyFont]))
+        }
+        // Tiny font keeps the rule paragraph visually thin.
+        divider.append(NSAttributedString(string: "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 4),
+            .paragraphStyle: style,
+        ]))
         storage.insert(divider, at: insertAt)
         tv.setSelectedRange(NSRange(location: insertAt + divider.length, length: 0))
-        // Typing after a split starts fresh body text, not faint rule styling.
+        // Typing after a split starts fresh body text outside the table block.
         var attrs = tv.typingAttributes
         attrs[.font] = bodyFont
         attrs[.foregroundColor] = DS.paper
+        attrs[.paragraphStyle] = NSParagraphStyle.default
         tv.typingAttributes = attrs
         tv.didChangeText()
     }

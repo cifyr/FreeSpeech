@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import IOKit
+import IOKit.ps
 import FreeSpeechCore
 
 // Stats: live machine metrics, modeled like the Stats app — every stat can be
@@ -13,7 +14,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
     // One entry per stat the suite knows how to sample. Adding a stat here
     // gives it menu rows, an optional menu bar item, and settings for free.
     enum StatKind: String, CaseIterable {
-        case cpu, memory, network, disk, system, bluetooth
+        case cpu, memory, network, disk, battery, system, bluetooth
 
         var displayName: String {
             switch self {
@@ -21,6 +22,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .memory: return "Memory"
             case .network: return "Network"
             case .disk: return "Disk"
+            case .battery: return "Battery"
             case .system: return "Uptime and load"
             case .bluetooth: return "Bluetooth battery"
             }
@@ -32,8 +34,9 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .memory: return "memorychip"
             case .network: return "arrow.up.arrow.down"
             case .disk: return "internaldrive"
+            case .battery: return "battery.100percent"
             case .system: return "clock"
-            case .bluetooth: return "battery.75percent"
+            case .bluetooth: return "wave.3.right"
             }
         }
 
@@ -45,6 +48,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .memory: return "showMemory"
             case .network: return "showNetwork"
             case .disk: return "showDisk"
+            case .battery: return "showBattery"
             case .system: return "showSystem"
             case .bluetooth: return "showBluetooth"
             }
@@ -53,6 +57,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         var itemKey: String { "item.\(rawValue)" }
         var variantKey: String { "variant.\(rawValue)" }
         var iconKey: String { "itemIcon.\(rawValue)" }
+        func rowKey(_ row: String) -> String { "row.\(rawValue).\(row)" }
 
         // Display variants for this stat's own menu bar item.
         var variants: [(id: String, name: String)] {
@@ -61,8 +66,23 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .memory: return [("percent", "Percent"), ("used", "Used GB")]
             case .network: return [("down", "Down"), ("up", "Up"), ("both", "Both")]
             case .disk: return [("free", "Free"), ("used", "Used"), ("percent", "Used %")]
+            case .battery: return [("percent", "Percent")]
             case .system: return [("load", "Load"), ("uptime", "Uptime")]
             case .bluetooth: return [("lowest", "Lowest %")]
+            }
+        }
+
+        // Individual dropdown rows, each toggleable so the dropdown shows
+        // exactly what the user wants and nothing else.
+        var rows: [(id: String, name: String)] {
+            switch self {
+            case .cpu: return [("usage", "Usage")]
+            case .memory: return [("used", "Used"), ("swap", "Swap")]
+            case .network: return [("down", "Down"), ("up", "Up")]
+            case .disk: return [("used", "Used"), ("free", "Free")]
+            case .battery: return [("level", "Level"), ("state", "State")]
+            case .system: return [("uptime", "Uptime"), ("load", "Load")]
+            case .bluetooth: return [("devices", "Devices")]
             }
         }
     }
@@ -109,6 +129,10 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
 
     private func showsIcon(_ kind: StatKind) -> Bool {
         settings.moduleBool(id: info.id, key: kind.iconKey) ?? true
+    }
+
+    private func showsRow(_ kind: StatKind, _ row: String) -> Bool {
+        settings.moduleBool(id: info.id, key: kind.rowKey(row)) ?? true
     }
 
     func activate() {
@@ -236,6 +260,8 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             return StatsFormatting.percent(snapshot.diskUsed / max(snapshot.diskTotal, 1))
         case (.disk, _):
             return "\(StatsFormatting.bytes(snapshot.diskFree)) free"
+        case (.battery, _):
+            return snapshot.batteryPercent.map { "\($0)%" } ?? "\u{2014}"
         case (.system, "uptime"):
             return StatsFormatting.uptime(snapshot.uptime)
         case (.system, _):
@@ -269,12 +295,14 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
 
         if showsInMenu(.cpu) || showsInMenu(.memory) {
             addHeader("MACHINE")
-            if showsInMenu(.cpu) {
+            if showsInMenu(.cpu), showsRow(.cpu, "usage") {
                 addMetric("CPU", StatsFormatting.percent(snapshot.cpuUsage))
             }
             if showsInMenu(.memory) {
-                addMetric("Memory", "\(StatsFormatting.bytes(snapshot.memoryUsed)) of \(StatsFormatting.bytes(snapshot.memoryTotal)) (\(StatsFormatting.percent(snapshot.memoryUsed / max(snapshot.memoryTotal, 1))))")
-                if snapshot.swapUsed > 0 {
+                if showsRow(.memory, "used") {
+                    addMetric("Memory", "\(StatsFormatting.bytes(snapshot.memoryUsed)) of \(StatsFormatting.bytes(snapshot.memoryTotal)) (\(StatsFormatting.percent(snapshot.memoryUsed / max(snapshot.memoryTotal, 1))))")
+                }
+                if showsRow(.memory, "swap"), snapshot.swapUsed > 0 {
                     addMetric("Swap", StatsFormatting.bytes(snapshot.swapUsed))
                 }
             }
@@ -283,27 +311,50 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         if showsInMenu(.network) {
             menu.addItem(.separator())
             addHeader("NETWORK")
-            addMetric("Down", StatsFormatting.bytesPerSecond(snapshot.downloadBytesPerSecond))
-            addMetric("Up", StatsFormatting.bytesPerSecond(snapshot.uploadBytesPerSecond))
+            if showsRow(.network, "down") {
+                addMetric("Down", StatsFormatting.bytesPerSecond(snapshot.downloadBytesPerSecond))
+            }
+            if showsRow(.network, "up") {
+                addMetric("Up", StatsFormatting.bytesPerSecond(snapshot.uploadBytesPerSecond))
+            }
         }
 
         if showsInMenu(.disk) {
             menu.addItem(.separator())
             addHeader("DISK")
-            addMetric("Used", "\(StatsFormatting.bytes(snapshot.diskUsed)) of \(StatsFormatting.bytes(snapshot.diskTotal))")
-            addMetric("Free", StatsFormatting.bytes(snapshot.diskFree))
+            if showsRow(.disk, "used") {
+                addMetric("Used", "\(StatsFormatting.bytes(snapshot.diskUsed)) of \(StatsFormatting.bytes(snapshot.diskTotal))")
+            }
+            if showsRow(.disk, "free") {
+                addMetric("Free", StatsFormatting.bytes(snapshot.diskFree))
+            }
+        }
+
+        if showsInMenu(.battery), let percent = snapshot.batteryPercent {
+            menu.addItem(.separator())
+            addHeader("BATTERY")
+            if showsRow(.battery, "level") {
+                addMetric("Level", "\(percent)%")
+            }
+            if showsRow(.battery, "state") {
+                addMetric("State", snapshot.batteryCharging ? "Charging" : "On battery")
+            }
         }
 
         if showsInMenu(.system) {
             menu.addItem(.separator())
             addHeader("SYSTEM")
-            addMetric("Uptime", StatsFormatting.uptime(snapshot.uptime))
-            addMetric("Load", String(format: "%.2f  %.2f  %.2f",
-                                     snapshot.loadAverages.0, snapshot.loadAverages.1,
-                                     snapshot.loadAverages.2))
+            if showsRow(.system, "uptime") {
+                addMetric("Uptime", StatsFormatting.uptime(snapshot.uptime))
+            }
+            if showsRow(.system, "load") {
+                addMetric("Load", String(format: "%.2f  %.2f  %.2f",
+                                         snapshot.loadAverages.0, snapshot.loadAverages.1,
+                                         snapshot.loadAverages.2))
+            }
         }
 
-        if showsInMenu(.bluetooth) {
+        if showsInMenu(.bluetooth), showsRow(.bluetooth, "devices") {
             menu.addItem(.separator())
             addHeader("BLUETOOTH BATTERY")
             let devices = sampler.bluetoothBatteries()
@@ -441,6 +492,18 @@ private struct StatKindSection: View {
                     inMenu = $0
                     settings.setModuleBool($0, id: moduleID, key: kind.showKey)
                 }))
+            if inMenu, kind.rows.count > 1 {
+                HStack(spacing: 14) {
+                    Text("Rows")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    ForEach(kind.rows, id: \.id) { row in
+                        rowCheckbox(row)
+                    }
+                    Spacer()
+                }
+                .padding(.leading, 28)
+            }
             DSToggleRow(title: "Own menu bar item", isOn: Binding(
                 get: { ownItem },
                 set: {
@@ -475,6 +538,18 @@ private struct StatKindSection: View {
             RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
                 .strokeBorder(Color.dsLine, lineWidth: 1))
     }
+
+    // Per-row dropdown control: each metric line can be hidden individually.
+    private func rowCheckbox(_ row: (id: String, name: String)) -> some View {
+        HStack(spacing: 6) {
+            DSCheckbox(isOn: Binding(
+                get: { settings.moduleBool(id: moduleID, key: kind.rowKey(row.id)) ?? true },
+                set: { settings.setModuleBool($0, id: moduleID, key: kind.rowKey(row.id)) }))
+            Text(row.name)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.dsPaper)
+        }
+    }
 }
 
 // MARK: - Sampling
@@ -491,6 +566,9 @@ struct StatsSnapshot {
     var diskTotal: Double = 0       // bytes
     var uptime: TimeInterval = 0
     var loadAverages: (Double, Double, Double) = (0, 0, 0)
+    // nil on machines without an internal battery.
+    var batteryPercent: Int?
+    var batteryCharging = false
 }
 
 struct BluetoothBattery {
@@ -596,8 +674,28 @@ final class StatsSampler {
             snapshot.loadAverages = (loads[0], loads[1], loads[2])
         }
 
+        (snapshot.batteryPercent, snapshot.batteryCharging) = Self.internalBattery()
+
         lastSnapshot = snapshot
         return snapshot
+    }
+
+    // The Mac's own battery via IOPowerSources; (nil, false) on desktops.
+    private static func internalBattery() -> (Int?, Bool) {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] else {
+            return (nil, false)
+        }
+        for source in sources {
+            guard let description = IOPSGetPowerSourceDescription(blob, source)?
+                    .takeUnretainedValue() as? [String: Any],
+                  description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType,
+                  let current = description[kIOPSCurrentCapacityKey] as? Int,
+                  let max = description[kIOPSMaxCapacityKey] as? Int, max > 0 else { continue }
+            let charging = description[kIOPSIsChargingKey] as? Bool ?? false
+            return (Int((Double(current) / Double(max) * 100).rounded()), charging)
+        }
+        return (nil, false)
     }
 
     private static func interfaceByteCounts() -> (received: UInt64, sent: UInt64) {

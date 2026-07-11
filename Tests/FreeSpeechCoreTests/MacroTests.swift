@@ -35,6 +35,20 @@ final class MacroTests: XCTestCase {
         XCTAssertEqual(macro.stepGap, 0)
     }
 
+    func testMacroLibraryRoundTrip() {
+        let library = [
+            NamedMacro(name: "login", macro: Macro(
+                steps: [.key(keyCode: 36, modifiers: 0)], repeatCount: 1)),
+            NamedMacro(name: "farm", macro: Macro(
+                steps: [.click(button: .left, type: .single, x: 5, y: 6)], repeatCount: 0)),
+        ]
+        let json = MacroLibrary.encode(library)
+        XCTAssertNotNil(json)
+        XCTAssertEqual(MacroLibrary.decode(json: json), library)
+        XCTAssertEqual(MacroLibrary.decode(json: nil), [])
+        XCTAssertEqual(MacroLibrary.decode(json: "garbage"), [])
+    }
+
     func testStepSummaries() {
         XCTAssertEqual(
             MacroStep.click(button: .left, type: .single, x: 10, y: 20).summary,

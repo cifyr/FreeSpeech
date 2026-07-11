@@ -65,3 +65,33 @@ public struct Macro: Codable, Equatable {
         }
     }
 }
+
+// A saved, named macro in the library.
+public struct NamedMacro: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var macro: Macro
+
+    public init(id: UUID = UUID(), name: String, macro: Macro) {
+        self.id = id
+        self.name = name
+        self.macro = macro
+    }
+}
+
+public enum MacroLibrary {
+    public static func encode(_ macros: [NamedMacro]) -> String? {
+        guard let data = try? JSONEncoder().encode(macros) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    public static func decode(json: String?) -> [NamedMacro] {
+        guard let json, let data = json.data(using: .utf8) else { return [] }
+        do {
+            return try JSONDecoder().decode([NamedMacro].self, from: data)
+        } catch {
+            Log.error("macro: failed to decode macro library: \(error)")
+            return []
+        }
+    }
+}

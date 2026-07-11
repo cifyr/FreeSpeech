@@ -32,7 +32,8 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
         static let pointX = "pointX"
         static let pointY = "pointY"
         static let mode = "mode"    // simple | macro
-        static let macro = "macro"  // Macro JSON
+        static let macro = "macro"  // working Macro JSON
+        static let macroLibrary = "macroLibrary"  // [NamedMacro] JSON
     }
 
     enum Mode: String, CaseIterable {
@@ -422,6 +423,7 @@ final class MacroRunner {
     }
 }
 
+
 // MARK: - Settings pane
 
 // Bridges the module to SwiftUI so Start/Stop state and captured points refresh.
@@ -431,6 +433,8 @@ final class AutoclickPaneModel: ObservableObject {
     @Published var stepCaptureCountdown: Int?
 }
 
+// Grouped into cards so each topic reads on its own: hotkey+mode, then either
+// the autoclick cards (timing, click, position) or the macro cards.
 private struct AutoclickSettingsPane: View {
     @ObservedObject var model: AutoclickPaneModel
     let settings: Settings
@@ -462,141 +466,139 @@ private struct AutoclickSettingsPane: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HotkeyRecorderButton(
-                label: "Start / stop",
-                preset: settings.moduleHotkey(
-                    id: moduleID, defaultPreset: AutoclickModule.defaultHotkey),
-                onChange: { settings.setModuleHotkey($0, id: moduleID) })
-
-            VStack(alignment: .leading, spacing: 8) {
-                DSSectionLabel("Mode")
+        VStack(alignment: .leading, spacing: 12) {
+            DSSettingsCard(title: "Hotkey and mode") {
+                HotkeyRecorderButton(
+                    label: "Start / stop",
+                    preset: settings.moduleHotkey(
+                        id: moduleID, defaultPreset: AutoclickModule.defaultHotkey),
+                    onChange: { settings.setModuleHotkey($0, id: moduleID) })
                 HStack(spacing: 8) {
                     ForEach(AutoclickModule.Mode.allCases, id: \.rawValue) { value in
-                        DSChip(title: value.displayName, selected: mode == value) {
+                        chip(value.displayName, selected: mode == value) {
                             mode = value
                             settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.mode)
                         }
                     }
+                    Spacer()
                 }
+                Text(mode == .macro
+                     ? "Macro replays a recorded sequence of clicks, key presses, and waits."
+                     : "Autoclick repeats one click at a fixed pace.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsFaint)
             }
 
             if mode == .macro {
-                MacroEditorSection(model: model, settings: settings,
-                                   button: button, clickType: clickType)
+                macroCards
             } else {
-                simpleControls
+                autoclickCards
             }
         }
     }
 
-    @ViewBuilder private var simpleControls: some View {
-            VStack(alignment: .leading, spacing: 8) {
-                DSSectionLabel("Interval")
-                HStack(spacing: 8) {
-                    ForEach([0.05, 0.1, 0.25, 0.5, 1.0], id: \.self) { value in
-                        DSChip(title: chipTitle(value), selected: abs(interval - value) < 0.0001) {
-                            setInterval(value)
-                        }
+    // MARK: Autoclick cards
+
+    @ViewBuilder private var autoclickCards: some View {
+        DSSettingsCard(title: "Timing") {
+            HStack(spacing: 8) {
+                Text("Speed")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.dsMuted)
+                    .frame(width: 60, alignment: .leading)
+                ForEach([0.05, 0.1, 0.25, 0.5, 1.0], id: \.self) { value in
+                    chip(chipTitle(value), selected: abs(interval - value) < 0.0001) {
+                        setInterval(value)
                     }
                 }
-                HStack(spacing: 8) {
-                    Text("Custom")
-                        .font(.system(size: 12))
+                DSNumberField(
+                    placeholder: "sec",
+                    value: $interval,
+                    range: AutoclickPlan.minInterval...AutoclickPlan.maxInterval,
+                    fractionDigits: 3,
+                    onCommit: { setInterval($0) })
+                Text("s")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsFaint)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("Stop at")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.dsMuted)
+                    .frame(width: 60, alignment: .leading)
+                ForEach([0, 10, 100, 1000], id: \.self) { value in
+                    chip(value == 0 ? "Never" : "\(value)", selected: Int(maxClicks) == value) {
+                        setMaxClicks(Double(value))
+                    }
+                }
+                DSNumberField(
+                    placeholder: "count",
+                    value: $maxClicks,
+                    range: 0...1_000_000,
+                    fractionDigits: 0,
+                    onCommit: { setMaxClicks($0) })
+                Text("clicks")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsFaint)
+                Spacer()
+            }
+        }
+
+        DSSettingsCard(title: "Click") {
+            HStack(spacing: 8) {
+                ForEach(AutoclickPlan.ClickType.allCases, id: \.rawValue) { value in
+                    chip(value.displayName, selected: clickType == value) {
+                        clickType = value
+                        settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.clickType)
+                    }
+                }
+                Rectangle().fill(Color.dsLine).frame(width: 1, height: 20)
+                ForEach(AutoclickPlan.Button.allCases, id: \.rawValue) { value in
+                    chip("\(value.displayName) button", selected: button == value) {
+                        button = value
+                        settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.button)
+                    }
+                }
+                Spacer()
+            }
+        }
+
+        DSSettingsCard(title: "Position") {
+            HStack(spacing: 8) {
+                ForEach(AutoclickPlan.Target.allCases, id: \.rawValue) { value in
+                    chip(value.displayName, selected: target == value) {
+                        target = value
+                        settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.target)
+                    }
+                }
+                Spacer()
+            }
+            if target == .fixedPoint {
+                HStack(spacing: 10) {
+                    Button(captureButtonTitle) { beginCapture() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(model.captureCountdown != nil)
+                    Text(pointDescription)
+                        .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Color.dsMuted)
-                    DSNumberField(
-                        placeholder: "sec",
-                        value: $interval,
-                        range: AutoclickPlan.minInterval...AutoclickPlan.maxInterval,
-                        fractionDigits: 3,
-                        onCommit: { setInterval($0) })
-                    Text(String(format: "seconds between clicks (= %.1f clicks/sec)", 1.0 / max(interval, 0.001)))
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dsFaint)
                 }
+                DSToggleRow(
+                    title: "Stop when I move the mouse",
+                    caption: "Grabbing the cursor cancels the run instead of fighting it.",
+                    isOn: Binding(
+                        get: { stopOnMove },
+                        set: {
+                            stopOnMove = $0
+                            settings.setModuleBool($0, id: moduleID, key: AutoclickModule.Key.stopOnMove)
+                        }))
             }
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 8) {
-                DSSectionLabel("Stop after")
-                HStack(spacing: 8) {
-                    ForEach([0, 10, 100, 1000], id: \.self) { value in
-                        DSChip(title: value == 0 ? "Until stopped" : "\(value)",
-                               selected: Int(maxClicks) == value) {
-                            setMaxClicks(Double(value))
-                        }
-                    }
-                }
-                HStack(spacing: 8) {
-                    Text("Custom")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.dsMuted)
-                    DSNumberField(
-                        placeholder: "count",
-                        value: $maxClicks,
-                        range: 0...1_000_000,
-                        fractionDigits: 0,
-                        onCommit: { setMaxClicks($0) })
-                    Text("clicks, 0 = until stopped")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dsFaint)
-                }
-            }
-
-            HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    DSSectionLabel("Click")
-                    HStack(spacing: 8) {
-                        ForEach(AutoclickPlan.ClickType.allCases, id: \.rawValue) { value in
-                            DSChip(title: value.displayName, selected: clickType == value) {
-                                clickType = value
-                                settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.clickType)
-                            }
-                        }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    DSSectionLabel("Button")
-                    HStack(spacing: 8) {
-                        ForEach(AutoclickPlan.Button.allCases, id: \.rawValue) { value in
-                            DSChip(title: value.displayName, selected: button == value) {
-                                button = value
-                                settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.button)
-                            }
-                        }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                DSSectionLabel("Where")
-                HStack(spacing: 8) {
-                    ForEach(AutoclickPlan.Target.allCases, id: \.rawValue) { value in
-                        DSChip(title: value.displayName, selected: target == value) {
-                            target = value
-                            settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.target)
-                        }
-                    }
-                }
-                if target == .fixedPoint {
-                    HStack(spacing: 10) {
-                        Button(captureButtonTitle) { beginCapture() }
-                            .buttonStyle(GhostButtonStyle())
-                            .disabled(model.captureCountdown != nil)
-                        Text(pointDescription)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color.dsMuted)
-                    }
-                    DSToggleRow(
-                        title: "Stop when I move the mouse",
-                        caption: "Grabbing the cursor cancels the run instead of fighting it.",
-                        isOn: Binding(
-                            get: { stopOnMove },
-                            set: {
-                                stopOnMove = $0
-                                settings.setModuleBool($0, id: moduleID, key: AutoclickModule.Key.stopOnMove)
-                            }))
-                }
-            }
+    @ViewBuilder private var macroCards: some View {
+        MacroEditorSection(model: model, settings: settings,
+                           button: button, clickType: clickType)
     }
 
     private func setInterval(_ value: Double) {
@@ -649,11 +651,17 @@ private struct AutoclickSettingsPane: View {
     }
 }
 
+// Compact chip: content-sized, not stretched across the row.
+private func chip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    DSChip(title: title, selected: selected, action: action)
+        .fixedSize()
+}
+
 // MARK: - Macro editor
 
-// Builds the step list: clicks use the Click/Button chips from the module's
-// settings at the moment the step is added, key steps record the next chord,
-// waits take the entered duration.
+// Builds the step list: clicks use the Click/Button choices at the moment the
+// step is added, key steps record the next chord, waits take the entered
+// duration. The working macro autosaves; the library keeps named copies.
 private struct MacroEditorSection: View {
     @ObservedObject var model: AutoclickPaneModel
     let settings: Settings
@@ -662,6 +670,8 @@ private struct MacroEditorSection: View {
 
     private let moduleID = ModuleCatalog.autoclicker.id
     @State private var macro: Macro
+    @State private var library: [NamedMacro]
+    @State private var saveName = ""
     @State private var waitSeconds: Double = 0.5
     @State private var recordingKey = false
     @State private var keyCapture = ShortcutCapture()
@@ -672,83 +682,120 @@ private struct MacroEditorSection: View {
         self.settings = settings
         self.button = button
         self.clickType = clickType
-        _macro = State(initialValue: settings.moduleString(
-            id: ModuleCatalog.autoclicker.id, key: AutoclickModule.Key.macro)
+        let id = ModuleCatalog.autoclicker.id
+        _macro = State(initialValue: settings.moduleString(id: id, key: AutoclickModule.Key.macro)
             .flatMap(Macro.decode) ?? Macro())
+        _library = State(initialValue: MacroLibrary.decode(
+            json: settings.moduleString(id: id, key: AutoclickModule.Key.macroLibrary)))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DSSectionLabel("Steps")
-            if macro.steps.isEmpty {
-                Text("No steps yet. A macro runs its steps in order, then repeats.")
+            DSSettingsCard(title: "Steps") {
+                if macro.steps.isEmpty {
+                    Text("No steps yet. A macro runs its steps in order, then repeats.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(Array(macro.steps.enumerated()), id: \.offset) { index, step in
+                            stepRow(index: index, step: step)
+                        }
+                    }
+                }
+                HStack(spacing: 8) {
+                    Button("+ Click at Cursor") { append(.click(
+                        button: button, type: clickType, x: nil, y: nil)) }
+                        .buttonStyle(GhostButtonStyle())
+                    Button(pointButtonTitle) { beginPointCapture() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(model.stepCaptureCountdown != nil)
+                    Button(recordingKey ? "Press keys\u{2026}" : "+ Key Press") { recordKey() }
+                        .buttonStyle(GhostButtonStyle())
+                }
+                HStack(spacing: 8) {
+                    Button("+ Wait") { append(.wait(seconds: waitSeconds)) }
+                        .buttonStyle(GhostButtonStyle())
+                    DSNumberField(
+                        placeholder: "sec", value: $waitSeconds, range: 0.01...600,
+                        fractionDigits: 2, onCommit: { waitSeconds = $0 })
+                    Text("seconds")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    Spacer()
+                }
+                Text("Clicks use the Click settings from Autoclick mode as they are added.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
-            } else {
-                VStack(spacing: 4) {
-                    ForEach(Array(macro.steps.enumerated()), id: \.offset) { index, step in
-                        stepRow(index: index, step: step)
-                    }
+            }
+
+            DSSettingsCard(title: "Repeat") {
+                HStack(spacing: 8) {
+                    Text("Runs")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.dsMuted)
+                    DSNumberField(
+                        placeholder: "runs",
+                        value: Binding(
+                            get: { Double(macro.repeatCount) },
+                            set: { macro.repeatCount = Int($0) }),
+                        range: 0...1_000_000,
+                        fractionDigits: 0,
+                        onCommit: { _ in persist() })
+                    Text("0 = until stopped")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    Text("Pause")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.dsMuted)
+                        .padding(.leading, 8)
+                    DSNumberField(
+                        placeholder: "sec",
+                        value: Binding(
+                            get: { macro.interval },
+                            set: { macro.interval = $0 }),
+                        range: 0...600,
+                        fractionDigits: 2,
+                        onCommit: { _ in persist() })
+                    Text("between runs")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    Spacer()
                 }
             }
 
-            DSSectionLabel("Add step")
-            HStack(spacing: 8) {
-                Button("Click at Cursor") { append(.click(
-                    button: button, type: clickType, x: nil, y: nil)) }
-                    .buttonStyle(GhostButtonStyle())
-                Button(pointButtonTitle) { beginPointCapture() }
-                    .buttonStyle(GhostButtonStyle())
-                    .disabled(model.stepCaptureCountdown != nil)
-                Button(recordingKey ? "Press keys\u{2026}" : "Key Press") { recordKey() }
-                    .buttonStyle(GhostButtonStyle())
-            }
-            HStack(spacing: 8) {
-                Button("Wait") { append(.wait(seconds: waitSeconds)) }
-                    .buttonStyle(GhostButtonStyle())
-                DSNumberField(
-                    placeholder: "sec", value: $waitSeconds, range: 0.01...600,
-                    fractionDigits: 2, onCommit: { waitSeconds = $0 })
-                Text("seconds")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
-            }
-            Text("Click steps use the Click and Button choices from Autoclick mode at the moment you add them.")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.dsFaint)
-                .fixedSize(horizontal: false, vertical: true)
-
-            DSSectionLabel("Repeat")
-            HStack(spacing: 8) {
-                Text("Runs")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.dsMuted)
-                DSNumberField(
-                    placeholder: "runs",
-                    value: Binding(
-                        get: { Double(macro.repeatCount) },
-                        set: { macro.repeatCount = Int($0) }),
-                    range: 0...1_000_000,
-                    fractionDigits: 0,
-                    onCommit: { _ in persist() })
-                Text("0 = until stopped")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
-                Text("Pause")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.dsMuted)
-                    .padding(.leading, 8)
-                DSNumberField(
-                    placeholder: "sec",
-                    value: Binding(
-                        get: { macro.interval },
-                        set: { macro.interval = $0 }),
-                    range: 0...600,
-                    fractionDigits: 2,
-                    onCommit: { _ in persist() })
-                Text("between runs")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
+            DSSettingsCard(title: "Saved macros") {
+                HStack(spacing: 8) {
+                    TextField("Name this macro", text: $saveName)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.dsPaper)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(
+                            Color.dsInk2,
+                            in: RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous)
+                                .strokeBorder(Color.dsLine, lineWidth: 1))
+                        .frame(maxWidth: 220)
+                    Button("Save Current") { saveCurrent() }
+                        .buttonStyle(GhostButtonStyle())
+                        .disabled(macro.steps.isEmpty
+                                  || saveName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Spacer()
+                }
+                if library.isEmpty {
+                    Text("Nothing saved yet. Saving keeps a named copy you can load back later.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                } else {
+                    VStack(spacing: 4) {
+                        ForEach(library) { saved in
+                            savedRow(saved)
+                        }
+                    }
+                }
             }
         }
         .onDisappear { if recordingKey { keyCapture.end(); recordingKey = false } }
@@ -802,6 +849,56 @@ private struct MacroEditorSection: View {
                 .strokeBorder(Color.dsLine, lineWidth: 1))
     }
 
+    private func savedRow(_ saved: NamedMacro) -> some View {
+        HStack(spacing: 8) {
+            Text(saved.name)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.dsPaper)
+                .lineLimit(1)
+            Text("\(saved.macro.steps.count) steps")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.dsFaint)
+            Spacer()
+            Button("Load") {
+                macro = saved.macro
+                persist()
+                Log.info("macro: loaded '\(saved.name)' (\(saved.macro.steps.count) steps)")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.dsAccent)
+            Button {
+                library.removeAll { $0.id == saved.id }
+                persistLibrary()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.dsMuted)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Color.dsInk2,
+            in: RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous)
+                .strokeBorder(Color.dsLine, lineWidth: 1))
+    }
+
+    private func saveCurrent() {
+        let name = saveName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !macro.steps.isEmpty else { return }
+        // Same name overwrites: saving twice should update, not duplicate.
+        library.removeAll { $0.name == name }
+        library.append(NamedMacro(name: name, macro: macro))
+        library.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        persistLibrary()
+        saveName = ""
+        Log.info("macro: saved '\(name)' (\(macro.steps.count) steps)")
+    }
+
     private func append(_ step: MacroStep) {
         macro.steps.append(step)
         persist()
@@ -819,9 +916,14 @@ private struct MacroEditorSection: View {
             macro.encodedJSON(), id: moduleID, key: AutoclickModule.Key.macro)
     }
 
+    private func persistLibrary() {
+        settings.setModuleString(
+            MacroLibrary.encode(library), id: moduleID, key: AutoclickModule.Key.macroLibrary)
+    }
+
     private var pointButtonTitle: String {
         if let n = model.stepCaptureCountdown { return "Capturing in \(n)\u{2026}" }
-        return "Click at Point (3s)"
+        return "+ Click at Point (3s)"
     }
 
     private func beginPointCapture() {

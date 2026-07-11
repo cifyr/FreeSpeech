@@ -70,6 +70,28 @@ private struct ModuleSettingsContainer: View {
 
 // MARK: - Shared pane building blocks
 
+// Card container: groups a settings topic under one kicker so panes read as
+// sections instead of a wall of controls.
+struct DSSettingsCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DSSectionLabel(title)
+            content
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.dsInk1,
+            in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                .strokeBorder(Color.dsLine, lineWidth: 1))
+    }
+}
+
 struct DSSectionLabel: View {
     let text: String
 
