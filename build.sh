@@ -83,6 +83,13 @@ else
     codesign --force --sign - --identifier com.cadenwarren.freespeech "$APP"
 fi
 
+# Install: keep /Applications current so the copy Caden actually runs is always
+# the latest signed build. A running instance keeps its old code until relaunch.
+INSTALL_APP="/Applications/FreeSpeech.app"
+echo "==> Installing to $INSTALL_APP"
+rm -rf "$INSTALL_APP"
+cp -R "$APP" "$INSTALL_APP"
+
 if [[ "$SKIP_MODEL" -eq 0 ]]; then
     MODEL_FILE="$MODELS_DIR/ggml-$MODEL_NAME.bin"
     if [[ ! -f "$MODEL_FILE" ]]; then
@@ -98,6 +105,6 @@ if [[ "$SKIP_MODEL" -eq 0 ]]; then
 fi
 
 echo
-echo "Build complete: $APP"
-echo "Run with: open \"$APP\"   (grant Microphone + Accessibility on first run)"
+echo "Build complete: $APP (installed to $INSTALL_APP)"
+echo "Run with: open \"$INSTALL_APP\"   (grant Microphone + Accessibility on first run)"
 echo "Default hotkey: hold Right Option to dictate."
