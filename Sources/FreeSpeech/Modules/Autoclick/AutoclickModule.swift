@@ -467,26 +467,31 @@ private struct AutoclickSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DSSettingsCard(title: "Hotkey and mode") {
-                HotkeyRecorderButton(
-                    label: "Start / stop",
-                    preset: settings.moduleHotkey(
-                        id: moduleID, defaultPreset: AutoclickModule.defaultHotkey),
-                    onChange: { settings.setModuleHotkey($0, id: moduleID) })
-                HStack(spacing: 8) {
+            // Two tools, two tabs: the selected tab is what the hotkey runs.
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 22) {
                     ForEach(AutoclickModule.Mode.allCases, id: \.rawValue) { value in
-                        chip(value.displayName, selected: mode == value) {
+                        DSTabButton(title: value.displayName, selected: mode == value) {
                             mode = value
                             settings.setModuleString(value.rawValue, id: moduleID, key: AutoclickModule.Key.mode)
                         }
                     }
                     Spacer()
                 }
-                Text(mode == .macro
-                     ? "Macro replays a recorded sequence of clicks, key presses, and waits."
-                     : "Autoclick repeats one click at a fixed pace.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
+                Rectangle().fill(Color.dsLine).frame(height: 1)
+            }
+            Text(mode == .macro
+                 ? "Macro replays a recorded sequence of clicks, key presses, and waits. The hotkey runs whichever tab is selected."
+                 : "Autoclick repeats one click at a fixed pace. The hotkey runs whichever tab is selected.")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.dsFaint)
+
+            DSSettingsCard(title: "Hotkey") {
+                HotkeyRecorderButton(
+                    label: "Start / stop",
+                    preset: settings.moduleHotkey(
+                        id: moduleID, defaultPreset: AutoclickModule.defaultHotkey),
+                    onChange: { settings.setModuleHotkey($0, id: moduleID) })
             }
 
             if mode == .macro {
