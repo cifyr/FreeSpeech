@@ -150,6 +150,27 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         settings.moduleBool(id: info.id, key: kind.rowKey(row)) ?? true
     }
 
+    // How a promoted stat renders in the menu bar: plain text or one of the
+    // drawn widgets fed by a rolling history of the stat's normalized value.
+    enum ItemStyle: String, CaseIterable {
+        case value, bar, dots, line, bars
+
+        var displayName: String {
+            switch self {
+            case .value: return "Value"
+            case .bar: return "Bar"
+            case .dots: return "Dots"
+            case .line: return "Line"
+            case .bars: return "Graph"
+            }
+        }
+    }
+
+    private func itemStyle(_ kind: StatKind) -> ItemStyle {
+        settings.moduleString(id: info.id, key: "style.\(kind.rawValue)")
+            .flatMap(ItemStyle.init) ?? .value
+    }
+
     private var showsOverviewItem: Bool {
         settings.moduleBool(id: info.id, key: Key.showOverviewItem) ?? true
     }
@@ -265,21 +286,96 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         menuBarTimer = timer
     }
 
+    // Rolling normalized history per promoted stat, feeding the drawn widgets.
+    private var history: [StatKind: [Double]] = [:]
+    private static let historyLength = 32
+    // Cache what each button currently shows so ticks only touch what changed;
+    // resetting image/title every tick made the items visibly flicker.
+    private var renderedState: [StatKind: (style: ItemStyle, icon: Bool, text: String)] = [:]
+
     private func updateStatItems(sampleNow: Bool) {
         guard anyLiveItems else { return }
         let snapshot = sampleNow ? sampler.sample() : sampler.lastSnapshot
         for (kind, item) in statItems where item.isVisible {
             guard let button = item.button else { continue }
+            if let value = normalizedValue(kind: kind, snapshot: snapshot) {
+                var series = history[kind] ?? []
+                series.append(value)
+                if series.count > Self.historyLength { series.removeFirst() }
+                history[kind] = series
+            }
+            let style = itemStyle(kind)
+            let icon = showsIcon(kind)
             let text = menuBarText(kind: kind, snapshot: snapshot)
-            button.image = showsIcon(kind)
-                ? NSImage(systemSymbolName: kind.symbolName,
-                          accessibilityDescription: kind.displayName)
-                : nil
-            button.imagePosition = .imageLeading
-            button.attributedTitle = NSAttributedString(
-                string: text,
-                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
+            let previous = renderedState[kind]
+
+            switch style {
+            case .value:
+                if previous?.style != .value || previous?.icon != icon {
+                    button.image = icon
+                        ? NSImage(systemSymbolName: kind.symbolName,
+                                  accessibilityDescription: kind.displayName)
+                        : nil
+                    button.imagePosition = .imageLeading
+                }
+                if previous?.text != text || previous?.style != .value {
+                    button.attributedTitle = NSAttributedString(
+                        string: text,
+                        attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
+                }
+            case .bar, .dots, .line, .bars:
+                button.image = StatusWidgetRenderer.image(
+                    style: style, history: history[kind] ?? [])
+                button.imagePosition = .imageOnly
+                if previous?.style == .value {
+                    button.attributedTitle = NSAttributedString(string: "")
+                }
+            }
+            button.toolTip = "\(kind.displayName): \(text)"
+            renderedState[kind] = (style, icon, text)
         }
+    }
+
+    // 0...1 value for graph styles; unbounded metrics normalize against the
+    // rolling peak so the shape stays readable at any throughput.
+    private func normalizedValue(kind: StatKind, snapshot: StatsSnapshot) -> Double? {
+        switch kind {
+        case .cpu:
+            return snapshot.cpuUsage
+        case .memory:
+            return snapshot.memoryUsed / max(snapshot.memoryTotal, 1)
+        case .gpu:
+            return snapshot.gpuUtilization
+        case .network:
+            let raw: Double
+            switch variant(kind) {
+            case "up": raw = snapshot.uploadBytesPerSecond
+            case "both": raw = snapshot.downloadBytesPerSecond + snapshot.uploadBytesPerSecond
+            default: raw = snapshot.downloadBytesPerSecond
+            }
+            return normalizeAgainstPeak(kind: kind, raw: raw)
+        case .disk:
+            return normalizeAgainstPeak(
+                kind: kind, raw: snapshot.diskReadPerSecond + snapshot.diskWritePerSecond)
+        case .battery:
+            return snapshot.batteryPercent.map { Double($0) / 100 }
+        case .system:
+            let cores = max(1, ProcessInfo.processInfo.activeProcessorCount)
+            return min(1, snapshot.loadAverages.0 / Double(cores))
+        case .bluetooth:
+            return sampler.bluetoothBatteries().map(\.percent).min()
+                .map { Double($0) / 100 }
+        }
+    }
+
+    private var peaks: [StatKind: Double] = [:]
+
+    private func normalizeAgainstPeak(kind: StatKind, raw: Double) -> Double {
+        // 100 KB/s floor so idle noise does not render as a full bar.
+        let floor: Double = 100 * 1024
+        let peak = max(peaks[kind] ?? 0, raw, floor)
+        peaks[kind] = peak
+        return raw / peak
     }
 
     private func menuBarText(kind: StatKind, snapshot: StatsSnapshot) -> String {
@@ -337,26 +433,81 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         menuTimer = nil
     }
 
+    private enum MenuEntry {
+        case header(String)
+        case metric(String, String)
+        case separator
+        case settingsAction
+
+        var structuralKind: Int {
+            switch self {
+            case .header: return 0
+            case .metric: return 1
+            case .separator: return 2
+            case .settingsAction: return 3
+            }
+        }
+    }
+
+    // Refresh ticks update the open menu's item titles in place. Tearing the
+    // items down and re-adding them every second made the whole menu redraw —
+    // it looked like the dropdown closed and reopened on each update.
     private func rebuild() {
         let snapshot = sampler.sample()
-        menu.removeAllItems()
+        let entries = buildEntries(snapshot: snapshot)
+        if entries.map(\.structuralKind) == menu.items.map(structuralKind(of:)) {
+            for (index, entry) in entries.enumerated() {
+                switch entry {
+                case .header(let text):
+                    menu.items[index].attributedTitle = Self.headerTitle(text)
+                case .metric(let label, let value):
+                    menu.items[index].attributedTitle = Self.metricTitle(label, value)
+                case .separator, .settingsAction:
+                    break
+                }
+            }
+            return
+        }
 
+        menu.removeAllItems()
+        for entry in entries {
+            switch entry {
+            case .header(let text):
+                addHeader(text)
+            case .metric(let label, let value):
+                addMetric(label, value)
+            case .separator:
+                menu.addItem(.separator())
+            case .settingsAction:
+                let settingsItem = NSMenuItem(
+                    title: "Stats Settings\u{2026}", action: #selector(openSettingsFromMenu),
+                    keyEquivalent: "")
+                settingsItem.target = self
+                menu.addItem(settingsItem)
+            }
+        }
+    }
+
+    private func structuralKind(of item: NSMenuItem) -> Int {
+        if item.isSeparatorItem { return 2 }
+        if item.action != nil { return 3 }
+        return item.isEnabled ? 1 : 0
+    }
+
+    private func buildEntries(snapshot: StatsSnapshot) -> [MenuEntry] {
+        var entries: [MenuEntry] = []
         var addedSection = false
         for kind in Self.orderedKinds(settings: settings) where showsInMenu(kind) {
             let rows = menuRows(for: kind, snapshot: snapshot)
             guard !rows.isEmpty else { continue }
-            if addedSection, showsSeparators { menu.addItem(.separator()) }
-            if showsHeaders { addHeader(kind.displayName.uppercased()) }
-            rows.forEach { addMetric($0.label, $0.value) }
+            if addedSection, showsSeparators { entries.append(.separator) }
+            if showsHeaders { entries.append(.header(kind.displayName.uppercased())) }
+            entries.append(contentsOf: rows.map { .metric($0.label, $0.value) })
             addedSection = true
         }
-
-        menu.addItem(.separator())
-        let settingsItem = NSMenuItem(
-            title: "Stats Settings\u{2026}", action: #selector(openSettingsFromMenu),
-            keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        entries.append(.separator)
+        entries.append(.settingsAction)
+        return entries
     }
 
     private func menuRows(
@@ -449,21 +600,17 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         openSettings()
     }
 
-    private func addHeader(_ text: String) {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        item.attributedTitle = NSAttributedString(
+    private static func headerTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(
             string: text,
             attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
                 .kern: 1.2,
                 .foregroundColor: NSColor.secondaryLabelColor,
             ])
-        item.isEnabled = false
-        menu.addItem(item)
     }
 
-    private func addMetric(_ label: String, _ value: String) {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private static func metricTitle(_ label: String, _ value: String) -> NSAttributedString {
         let title = NSMutableAttributedString(
             string: label + (value.isEmpty ? "" : "  "),
             attributes: [.font: NSFont.systemFont(ofSize: 13)])
@@ -471,7 +618,19 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         title.append(NSAttributedString(
             string: value,
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)]))
-        item.attributedTitle = title
+        return title
+    }
+
+    private func addHeader(_ text: String) {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.attributedTitle = Self.headerTitle(text)
+        item.isEnabled = false
+        menu.addItem(item)
+    }
+
+    private func addMetric(_ label: String, _ value: String) {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.attributedTitle = Self.metricTitle(label, value)
         item.isEnabled = true
         menu.addItem(item)
     }
@@ -774,6 +933,7 @@ private struct StatsMenuBarSection: View {
     @State private var ownItem: Bool
     @State private var variant: String
     @State private var icon: Bool
+    @State private var style: StatsModule.ItemStyle
 
     init(settings: Settings, kind: StatsModule.StatKind, onDisplayChange: @escaping () -> Void) {
         self.settings = settings
@@ -784,6 +944,8 @@ private struct StatsMenuBarSection: View {
         _variant = State(initialValue: settings.moduleString(id: id, key: kind.variantKey)
             ?? kind.variants[0].id)
         _icon = State(initialValue: settings.moduleBool(id: id, key: kind.iconKey) ?? true)
+        _style = State(initialValue: settings.moduleString(id: id, key: "style.\(kind.rawValue)")
+            .flatMap(StatsModule.ItemStyle.init) ?? .value)
     }
 
     var body: some View {
@@ -797,21 +959,131 @@ private struct StatsMenuBarSection: View {
                 }))
             if ownItem {
                 HStack(spacing: 8) {
-                    ForEach(kind.variants, id: \.id) { option in
-                        DSChip(title: option.name, selected: variant == option.id) {
-                            variant = option.id
-                            settings.setModuleString(option.id, id: moduleID, key: kind.variantKey)
+                    Text("Style")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                    ForEach(StatsModule.ItemStyle.allCases, id: \.rawValue) { option in
+                        DSChip(title: option.displayName, selected: style == option) {
+                            style = option
+                            settings.setModuleString(
+                                option.rawValue, id: moduleID, key: "style.\(kind.rawValue)")
                             onDisplayChange()
                         }
+                        .fixedSize()
                     }
-                    DSChip(title: "Icon", selected: icon) {
-                        icon.toggle()
-                        settings.setModuleBool(icon, id: moduleID, key: kind.iconKey)
-                        onDisplayChange()
+                    Spacer()
+                }
+                HStack(spacing: 8) {
+                    if style == .value || kind.variants.count > 1 {
+                        Text(style == .value ? "Show" : "Track")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsFaint)
+                        ForEach(kind.variants, id: \.id) { option in
+                            DSChip(title: option.name, selected: variant == option.id) {
+                                variant = option.id
+                                settings.setModuleString(option.id, id: moduleID, key: kind.variantKey)
+                                onDisplayChange()
+                            }
+                            .fixedSize()
+                        }
                     }
+                    if style == .value {
+                        DSChip(title: "Icon", selected: icon) {
+                            icon.toggle()
+                            settings.setModuleBool(icon, id: moduleID, key: kind.iconKey)
+                            onDisplayChange()
+                        }
+                        .fixedSize()
+                    }
+                    Spacer()
                 }
             }
         }
+    }
+}
+
+// MARK: - Menu bar widgets
+
+// Draws the graphical menu-bar styles as template images: shapes render in
+// black and macOS tints them to match the menu bar, light or dark.
+enum StatusWidgetRenderer {
+    static func image(style: StatsModule.ItemStyle, history: [Double]) -> NSImage {
+        let size: NSSize
+        switch style {
+        case .bar: size = NSSize(width: 36, height: 16)
+        case .dots: size = NSSize(width: 42, height: 16)
+        default: size = NSSize(width: 46, height: 16)
+        }
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSColor.black.setStroke()
+            let current = CGFloat(clamp(history.last ?? 0))
+            switch style {
+            case .value:
+                break
+            case .bar:
+                let outline = NSBezierPath(
+                    roundedRect: rect.insetBy(dx: 1, dy: 3.5), xRadius: 3, yRadius: 3)
+                outline.lineWidth = 1
+                outline.stroke()
+                let inner = rect.insetBy(dx: 3, dy: 5.5)
+                if current > 0.01 {
+                    NSBezierPath(
+                        roundedRect: NSRect(
+                            x: inner.minX, y: inner.minY,
+                            width: max(2, inner.width * current), height: inner.height),
+                        xRadius: 1.5, yRadius: 1.5).fill()
+                }
+            case .dots:
+                let count = 5
+                let filled = Int((Double(current) * Double(count)).rounded())
+                let diameter: CGFloat = 6
+                let gap: CGFloat = 2.5
+                for index in 0..<count {
+                    let frame = NSRect(
+                        x: CGFloat(index) * (diameter + gap) + 1,
+                        y: (rect.height - diameter) / 2,
+                        width: diameter, height: diameter)
+                    if index < filled {
+                        NSBezierPath(ovalIn: frame).fill()
+                    } else {
+                        let ring = NSBezierPath(ovalIn: frame.insetBy(dx: 0.5, dy: 0.5))
+                        ring.lineWidth = 1
+                        ring.stroke()
+                    }
+                }
+            case .line:
+                guard history.count > 1 else { break }
+                let path = NSBezierPath()
+                path.lineWidth = 1.5
+                path.lineJoinStyle = .round
+                let stepX = (rect.width - 2) / CGFloat(history.count - 1)
+                for (index, value) in history.enumerated() {
+                    let point = NSPoint(
+                        x: 1 + CGFloat(index) * stepX,
+                        y: 2 + (rect.height - 4) * CGFloat(clamp(value)))
+                    index == 0 ? path.move(to: point) : path.line(to: point)
+                }
+                path.stroke()
+            case .bars:
+                let slots = 16
+                let recent = Array(history.suffix(slots))
+                let barWidth = rect.width / CGFloat(slots)
+                for (index, value) in recent.enumerated() {
+                    let height = max(1.5, (rect.height - 2) * CGFloat(clamp(value)))
+                    NSBezierPath(rect: NSRect(
+                        x: CGFloat(index) * barWidth + 0.5, y: 1,
+                        width: barWidth - 1.5, height: height)).fill()
+                }
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        min(max(value, 0), 1)
     }
 }
 
