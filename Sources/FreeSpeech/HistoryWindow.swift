@@ -244,12 +244,12 @@ final class HistoryWindowController {
             window = w
         }
         model?.refresh()
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         Log.info("history window opened")
     }
 
     func hide() {
-        window?.orderOut(nil)
+        if let window { DSMotionAppKit.dismissWindow(window, close: false) }
     }
 }

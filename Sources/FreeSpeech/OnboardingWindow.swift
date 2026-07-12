@@ -489,13 +489,13 @@ final class OnboardingWindowController {
             w.center()
             window = w
         }
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         Log.info("onboarding window opened")
     }
 
     func close() {
-        window?.close()
+        if let window { DSMotionAppKit.dismissWindow(window, close: true) }
         window = nil
     }
 }

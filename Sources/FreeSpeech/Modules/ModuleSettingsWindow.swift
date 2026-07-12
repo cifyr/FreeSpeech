@@ -51,7 +51,7 @@ final class ModuleSettingsWindowController {
             }
             window = w
         }
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         onVisibilityChange?(true)
         Log.info("settings window opened: \(info.id)")

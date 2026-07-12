@@ -1074,7 +1074,7 @@ final class SettingsWindowController {
             window = w
         }
         if let tab { store?.selectedTab = tab }
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         Log.info("settings window opened")
     }

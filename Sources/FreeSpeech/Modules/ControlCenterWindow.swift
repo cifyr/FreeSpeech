@@ -30,7 +30,7 @@ final class ControlCenterWindowController {
             w.center()
             window = w
         }
-        window?.makeKeyAndOrderFront(nil)
+        if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         Log.info("control center opened")
     }

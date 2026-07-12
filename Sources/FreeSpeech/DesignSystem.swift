@@ -334,6 +334,34 @@ enum DSMotionAppKit {
             panel?.alphaValue = 1
         }
     }
+
+    // App windows/panels open with a quick fade + small upward settle and dismiss
+    // with a fade, mirroring the HUD/panel treatment. Only a not-yet-visible window
+    // animates, so re-showing an open one just brings it to front. Reduce Motion ->
+    // plain show/dismiss.
+    static func presentWindow(_ window: NSWindow) {
+        guard !reduceMotion, !window.isVisible else {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let target = window.frame
+        window.alphaValue = 0
+        window.setFrame(target.offsetBy(dx: 0, dy: -8), display: false)
+        window.makeKeyAndOrderFront(nil)
+        run(duration: DS.durBase) { _ in
+            window.animator().alphaValue = 1
+            window.animator().setFrame(target, display: true)
+        }
+    }
+
+    static func dismissWindow(_ window: NSWindow, close: Bool) {
+        let finish = {
+            if close { window.close() } else { window.orderOut(nil) }
+            window.alphaValue = 1
+        }
+        guard !reduceMotion, window.isVisible else { finish(); return }
+        run(duration: DS.hudCrossfade, { _ in window.animator().alphaValue = 0 }, completion: finish)
+    }
 }
 
 extension Color {
