@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.register(ClopModule(settings: settings, hub: eventHub))
         registry.register(ShelfModule(settings: settings))
         for info in [ModuleCatalog.cotypist, ModuleCatalog.linearMouse,
-                     ModuleCatalog.amphetamine] {
+                     ModuleCatalog.amphetamine, ModuleCatalog.convert] {
             registry.register(PlaceholderModule(info: info))
         }
 

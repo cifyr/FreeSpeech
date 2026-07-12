@@ -24,6 +24,8 @@
 	<false/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>FreeKit reads upcoming events to show what is next beside the notch.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>FreeKit controls playback and reads the current track from Spotify and Apple Music, and reads the Finder selection when you use the Optimize shortcut.</string>
 	<key>NSServices</key>

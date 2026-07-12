@@ -81,6 +81,13 @@ public enum ModuleCatalog {
         summary: "Automatic image, video, and PDF compression on copy.",
         symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: true)
 
+    // Local, client-side format conversion (images/video/audio/docs), the
+    // CloudConvert/FreeConvert niche without the upload. Prior art: p2r3/convert.
+    public static let convert = ModuleInfo(
+        id: "convert", displayName: "Convert",
+        summary: "Drag-and-drop file conversion between image, audio, video, and document formats, done on-device.",
+        symbolName: "arrow.triangle.2.circlepath", status: .comingSoon, ownsMenuBarItem: true)
+
     // The shelf is summoned by the shake gesture, not from the menu bar.
     public static let shelf = ModuleInfo(
         id: "shelf", displayName: "Shelf",
@@ -90,12 +97,12 @@ public enum ModuleCatalog {
     // Notch widget lives in the notch, so it never gets a menu bar item.
     public static let boringNotch = ModuleInfo(
         id: "boringnotch", displayName: "Boring Notch",
-        summary: "An expandable top-screen surface for time, app context, and quick tools.",
+        summary: "Spotify and Apple Music controls beside the notch, with your next calendar event.",
         symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
     public static let all: [ModuleInfo] = [
         speech, notebook, autoclicker, stats, capsLock,
-        cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch,
+        cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch, convert,
     ]
 
     // Tools that read as small apps rather than ambient utilities; the control
