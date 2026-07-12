@@ -81,10 +81,11 @@ public enum ModuleCatalog {
         summary: "Automatic image, video, and PDF compression on copy.",
         symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: true)
 
+    // The shelf is summoned by the shake gesture, not from the menu bar.
     public static let shelf = ModuleInfo(
         id: "shelf", displayName: "Shelf",
         summary: "Wiggle a drag to park files on a floating shelf, then drop them anywhere.",
-        symbolName: "tray.and.arrow.down", status: .available, ownsMenuBarItem: true)
+        symbolName: "tray.and.arrow.down", status: .available, ownsMenuBarItem: false)
 
     // Notch widget lives in the notch, so it never gets a menu bar item.
     public static let boringNotch = ModuleInfo(

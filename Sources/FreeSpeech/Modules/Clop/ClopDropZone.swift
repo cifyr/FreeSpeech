@@ -39,7 +39,7 @@ final class ClopDropZoneController {
 
     func hide() {
         guard isVisible else { return }
-        panel?.orderOut(nil)
+        panel?.dsFadeOut()
         isVisible = false
         Log.info("clop: drop zone hidden")
     }
@@ -56,7 +56,7 @@ final class ClopDropZoneController {
                 x: visible.midX - panel.frame.width / 2,
                 y: visible.minY + 48))
         }
-        panel.orderFrontRegardless()
+        panel.dsFadeIn()
         isVisible = true
         Log.info("clop: drop zone shown")
     }

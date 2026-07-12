@@ -16,12 +16,14 @@ public enum ShelfPlan {
             }
         }
 
-        // Higher sensitivity = fewer, shorter swings needed.
+        // Higher sensitivity = fewer, shorter swings needed. Tuned strict on
+        // purpose: ordinary dragging has incidental reversals, and a shelf
+        // that pops during normal work erodes trust fast.
         public var config: ShakeDetector.Config {
             switch self {
-            case .low: return ShakeDetector.Config(minReversals: 5, window: 1.0, minSwing: 28)
-            case .medium: return ShakeDetector.Config(minReversals: 4, window: 0.9, minSwing: 22)
-            case .high: return ShakeDetector.Config(minReversals: 3, window: 0.8, minSwing: 16)
+            case .low: return ShakeDetector.Config(minReversals: 6, window: 0.7, minSwing: 36)
+            case .medium: return ShakeDetector.Config(minReversals: 5, window: 0.8, minSwing: 30)
+            case .high: return ShakeDetector.Config(minReversals: 4, window: 0.9, minSwing: 22)
             }
         }
     }

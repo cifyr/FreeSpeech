@@ -78,10 +78,19 @@ final class ShelfPlanTests: XCTestCase {
         var strict = ShakeDetector(config: ShelfPlan.Sensitivity.low.config)
         _ = eager.addSample(x: 0, time: 0)
         _ = strict.addSample(x: 0, time: 0)
-        XCTAssertTrue(runZigzag(detector: &eager, swings: 5, amplitude: 18,
+        // 24pt swings clear the high floor (22) but not the low floor (36).
+        XCTAssertTrue(runZigzag(detector: &eager, swings: 6, amplitude: 24,
                                 secondsPerSwing: 0.06))
-        XCTAssertFalse(runZigzag(detector: &strict, swings: 5, amplitude: 18,
+        XCTAssertFalse(runZigzag(detector: &strict, swings: 6, amplitude: 24,
                                  secondsPerSwing: 0.06))
+    }
+
+    func testCasualFlickDoesNotFireMedium() {
+        var detector = ShakeDetector(config: config)
+        _ = detector.addSample(x: 0, time: 0)
+        // A quick two-swing flick while repositioning a file must stay quiet.
+        XCTAssertFalse(runZigzag(detector: &detector, swings: 3, amplitude: 60,
+                                 secondsPerSwing: 0.08))
     }
 
     func testConfigClampsDegenerateValues() {

@@ -1,21 +1,19 @@
 import AppKit
-import Combine
 import SwiftUI
 import FreeSpeechCore
 
 // Shelf: wiggle a drag side to side and a floating shelf pops up under the
 // cursor; park files there, drag them back out anywhere, close with the X.
-// The shake gesture math lives in Core's ShelfPlan.
-final class ShelfModule: NSObject, AppModule, NSMenuDelegate {
+// No menu bar presence: the shake gesture is the whole interface. The shake
+// math lives in Core's ShelfPlan.
+final class ShelfModule: NSObject, AppModule {
     let info = ModuleCatalog.shelf
 
     private let settings: Settings
-    private var statusItem: NSStatusItem?
     private var mouseMonitor: Any?
     private var detector: ShakeDetector
     private var dragSessionActive = false
     private var lastDragChangeCount = 0
-    private var storeSubscription: AnyCancellable?
     private let panelController = ShelfPanelController()
     private let paneModel = ShelfPaneModel()
     private lazy var settingsWindow = ModuleSettingsWindowController(
@@ -32,13 +30,15 @@ final class ShelfModule: NSObject, AppModule, NSMenuDelegate {
 
     init(settings: Settings) {
         self.settings = settings
-        detector = ShakeDetector(config: ShelfPlan.Sensitivity.medium.config)
+        detector = ShakeDetector(config: ShelfPlan.Sensitivity.low.config)
         super.init()
     }
 
+    // Low by default: an over-eager shelf during ordinary drags reads as a
+    // bug, and the settings chip is right there for anyone who wants it easier.
     private var sensitivity: ShelfPlan.Sensitivity {
         settings.moduleString(id: info.id, key: Key.sensitivity)
-            .flatMap(ShelfPlan.Sensitivity.init) ?? .medium
+            .flatMap(ShelfPlan.Sensitivity.init) ?? .low
     }
 
     private var keepOnClose: Bool {
@@ -60,14 +60,6 @@ final class ShelfModule: NSObject, AppModule, NSMenuDelegate {
                 self?.handleGlobalMouse(event)
             }
         }
-        panelController.onVisibilityChange = { [weak self] in self?.updateStatusIcon() }
-        storeSubscription = panelController.store.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in
-                // objectWillChange fires before the array mutates; icon reads
-                // the store, so refresh one runloop turn later.
-                DispatchQueue.main.async { self?.updateStatusIcon() }
-            }
         paneModel.module = self
         Log.info("shelf: activated, sensitivity=\(sensitivity.rawValue)")
     }
@@ -75,29 +67,13 @@ final class ShelfModule: NSObject, AppModule, NSMenuDelegate {
     func deactivate() {
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         mouseMonitor = nil
-        storeSubscription = nil
         panelController.keepItemsOnClose = false
         panelController.close()
         panelController.store.clear()
         Log.info("shelf: deactivated")
     }
 
-    func setMenuBarItemVisible(_ visible: Bool) {
-        if visible {
-            if statusItem == nil {
-                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.button?.toolTip = "Shelf \u{2014} wiggle a drag to park files"
-                let menu = NSMenu()
-                menu.delegate = self
-                item.menu = menu
-                statusItem = item
-                updateStatusIcon()
-            }
-            statusItem?.isVisible = true
-        } else {
-            statusItem?.isVisible = false
-        }
-    }
+    func setMenuBarItemVisible(_ visible: Bool) {}
 
     func openSettings() {
         settingsWindow.show()
@@ -141,71 +117,9 @@ final class ShelfModule: NSObject, AppModule, NSMenuDelegate {
 
     func clearShelf() {
         panelController.store.clear()
-        updateStatusIcon()
     }
 
     var itemCount: Int { panelController.store.items.count }
-
-    // MARK: - Status item
-
-    private func updateStatusIcon() {
-        guard let button = statusItem?.button else { return }
-        let count = itemCount
-        button.image = NSImage(
-            systemSymbolName: count > 0 ? "tray.full" : "tray",
-            accessibilityDescription: count > 0 ? "Shelf holding \(count) file(s)" : "Shelf empty")
-        // Accent tint = live activity, matching the suite's use of red for "hot".
-        button.contentTintColor = panelController.isVisible ? DS.accent : nil
-        button.attributedTitle = NSAttributedString(
-            string: count > 0 ? " \(count)" : "",
-            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
-    }
-
-    // MARK: - Menu
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        menu.autoenablesItems = false
-        let count = itemCount
-        let statusTitle = count > 0
-            ? "\(count) file\(count == 1 ? "" : "s") parked"
-            : "Wiggle a drag to open the shelf"
-        let status = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        menu.addItem(.separator())
-        let open = NSMenuItem(
-            title: panelController.isVisible ? "Hide Shelf" : "Show Shelf",
-            action: #selector(menuToggleShelf), keyEquivalent: "")
-        open.target = self
-        menu.addItem(open)
-        let clear = NSMenuItem(
-            title: "Clear Shelf", action: #selector(menuClear), keyEquivalent: "")
-        clear.target = self
-        clear.isEnabled = count > 0
-        menu.addItem(clear)
-        menu.addItem(.separator())
-        let settingsItem = NSMenuItem(
-            title: "Shelf Settings\u{2026}", action: #selector(menuOpenSettings), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-    }
-
-    @objc private func menuToggleShelf() {
-        if panelController.isVisible {
-            panelController.close()
-        } else {
-            showShelf(near: NSEvent.mouseLocation)
-        }
-    }
-
-    @objc private func menuClear() {
-        clearShelf()
-    }
-
-    @objc private func menuOpenSettings() {
-        openSettings()
-    }
 }
 
 // MARK: - Settings pane

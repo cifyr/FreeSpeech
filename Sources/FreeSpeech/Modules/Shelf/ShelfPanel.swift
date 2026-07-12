@@ -69,7 +69,11 @@ final class ShelfPanelController {
                            visible.maxY - Self.panelSize.height - 8)
             panel.setFrameOrigin(origin)
         }
-        panel.orderFrontRegardless()
+        if isVisible {
+            panel.orderFrontRegardless()
+        } else {
+            panel.dsFadeIn()
+        }
         isVisible = true
         Log.info("shelf: panel shown (\(store.items.count) item(s))")
         onVisibilityChange?()
@@ -77,7 +81,7 @@ final class ShelfPanelController {
 
     func close() {
         guard isVisible else { return }
-        panel?.orderOut(nil)
+        panel?.dsFadeOut()
         isVisible = false
         if !keepItemsOnClose { store.clear() }
         Log.info("shelf: panel closed")

@@ -13,6 +13,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private let hub: EventTapHub
 
     private var hotkeyToken: EventTapHub.HotkeyToken?
+    private var finderHotkeyToken: EventTapHub.HotkeyToken?
     private var statusItem: NSStatusItem?
     private var pollTimer: Timer?
     private var active = false
@@ -55,11 +56,16 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         static let videoPreset = "videoPreset"
         static let totalSavedBytes = "totalSavedBytes"
         static let totalItems = "totalItems"
+        static let toast = "toast"
+        static let finderHotkeyCode = "finderHotkeyKeyCode"
+        static let finderHotkeyMods = "finderHotkeyModifiers"
     }
 
     private enum UndoAction {
         case clipboard(PasteboardSnapshot)
-        case file(original: URL, backup: URL)
+        // replacement differs from original when a replace run converted the
+        // format and renamed the extension; undo removes it again.
+        case file(original: URL, backup: URL, replacement: URL?)
     }
 
     init(settings: Settings, hub: EventTapHub) {
@@ -110,6 +116,12 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 if case .down = direction { self?.optimizeClipboardNow() }
             }
         }
+        if finderHotkeyToken == nil {
+            finderHotkeyToken = hub.register(
+                preset: finderHotkey, label: "clop.optimizeFinderSelection") { [weak self] direction in
+                if case .down = direction { self?.optimizeFinderSelection() }
+            }
+        }
         paneModel.module = self
         dropZone.onDrop = { [weak self] urls in self?.optimizeFiles(urls) }
         startPollingIfNeeded()
@@ -123,6 +135,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         cancelAllWork()
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
+        if let finderHotkeyToken { hub.unregister(finderHotkeyToken) }
+        finderHotkeyToken = nil
         Log.info("clop: deactivated")
     }
 
@@ -165,6 +179,56 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     func updateHotkey(_ preset: HotkeyPreset) {
         settings.setModuleHotkey(preset, id: info.id)
         if let hotkeyToken { hub.update(hotkeyToken, preset: preset) }
+    }
+
+    // Second per-module hotkey; the shared moduleHotkey helper only stores
+    // one, so this pair of keys rides the generic Int storage.
+    var finderHotkey: HotkeyPreset {
+        guard let code = settings.moduleInt(id: info.id, key: Key.finderHotkeyCode),
+              Int64(code) != HotkeyPreset.disabled.keyCode else { return .disabled }
+        let modifiers = HotkeyModifiers(
+            rawValue: UInt64(settings.moduleInt(id: info.id, key: Key.finderHotkeyMods) ?? 0))
+        return .custom(keyCode: Int64(code), modifiers: modifiers)
+    }
+
+    func updateFinderHotkey(_ preset: HotkeyPreset) {
+        settings.setModuleInt(Int(preset.keyCode), id: info.id, key: Key.finderHotkeyCode)
+        settings.setModuleInt(Int(preset.modifiers.rawValue), id: info.id, key: Key.finderHotkeyMods)
+        if let finderHotkeyToken { hub.update(finderHotkeyToken, preset: preset) }
+    }
+
+    // Reads the current Finder selection via Apple Events (first use prompts
+    // for Automation consent) and runs the file flow on it.
+    func optimizeFinderSelection() {
+        Log.info("clop: optimize Finder selection requested")
+        guard let script = NSAppleScript(
+            source: "tell application \"Finder\" to return selection as alias list") else { return }
+        var errorInfo: NSDictionary?
+        let result = script.executeAndReturnError(&errorInfo)
+        if let errorInfo {
+            Log.error("clop: Finder selection read failed: \(errorInfo)")
+            ClopToast.show("Allow FreeKit to control Finder in Privacy & Security > Automation")
+            return
+        }
+        var urls: [URL] = []
+        // A single selected item comes back as a bare alias, not a one-item list.
+        let descriptors = result.descriptorType == typeAEList
+            ? (1...max(1, result.numberOfItems)).compactMap { result.atIndex($0) }
+            : [result]
+        for descriptor in descriptors {
+            if let data = descriptor.coerce(toDescriptorType: typeFileURL)?.data,
+               let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL {
+                urls.append(url)
+            }
+        }
+        let supported = urls.filter {
+            ClopOptimizer.mediaType(forFileExtension: $0.pathExtension) != nil
+        }
+        guard !supported.isEmpty else {
+            ClopToast.show("No optimizable files selected in Finder")
+            return
+        }
+        optimizeFiles(supported)
     }
 
     // MARK: - Clipboard watcher
@@ -459,14 +523,23 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             rememberOwnWrite(pasteboard)
             Log.info("clop: clipboard restored from pre-optimization snapshot")
             finish(result: "Restored previous clipboard")
-        case .file(let original, let backup):
+        case .file(let original, let backup, let replacement):
             do {
                 // Restore via a staging copy so the backup survives as a second
                 // safety net even after a successful undo.
                 let staging = FileManager.default.temporaryDirectory
                     .appendingPathComponent("clop-undo-\(UUID().uuidString)")
                 try FileManager.default.copyItem(at: backup, to: staging)
-                _ = try FileManager.default.replaceItemAt(original, withItemAt: staging)
+                if FileManager.default.fileExists(atPath: original.path) {
+                    _ = try FileManager.default.replaceItemAt(original, withItemAt: staging)
+                } else {
+                    try FileManager.default.moveItem(at: staging, to: original)
+                }
+                // A renamed replacement is Clop's own output; undo takes it
+                // back out so the folder returns to its exact prior state.
+                if let replacement, replacement != original {
+                    try? FileManager.default.removeItem(at: replacement)
+                }
                 Log.info("clop: restored \(original.path) from backup \(backup.path)")
                 finish(result: "Restored \(original.lastPathComponent)")
             } catch {
@@ -492,7 +565,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    private func optimizeFiles(_ urls: [URL]) {
+    func optimizeFiles(_ urls: [URL]) {
         let plan = Self.currentPlan(settings: settings)
         let preset = videoPreset.avPreset
         Log.info("clop: optimizing \(urls.count) file(s), destination=\(plan.fileDestination.rawValue)")
@@ -562,11 +635,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         let originalBytes = fileSize(url)
         switch mediaType {
         case .image:
-            // Replacing in place must not silently change a file's format, so
-            // replace runs always keep the original encoding.
-            var filePlan = plan
-            if plan.fileDestination == .replace { filePlan.outputFormat = .keep }
-            let encodePlan = filePlan
+            let encodePlan = plan
             let result = try await Task.detached(priority: .userInitiated) {
                 try ClopOptimizer.optimizeImage(Data(contentsOf: url), plan: encodePlan)
             }.value
@@ -575,7 +644,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 return nil
             }
             let ext = result.type.preferredFilenameExtension ?? url.pathExtension
-            try writeFileResult(data: result.data, for: url, plan: plan, preferredExtension: ext)
+            try writeFileResult(data: result.data, for: url, plan: plan,
+                                resultType: result.type, preferredExtension: ext)
             return (originalBytes, result.data.count)
         case .pdf:
             let optimized = try await Task.detached(priority: .userInitiated) {
@@ -585,7 +655,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 Log.info("clop: \(url.lastPathComponent) not smaller (\(originalBytes) -> \(optimized.count) bytes), skipped")
                 return nil
             }
-            try writeFileResult(data: optimized, for: url, plan: plan, preferredExtension: "pdf")
+            try writeFileResult(data: optimized, for: url, plan: plan,
+                                resultType: .pdf, preferredExtension: "pdf")
             return (originalBytes, optimized.count)
         case .video:
             let outputURL = try await ClopOptimizer.optimizeVideo(
@@ -606,7 +677,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     }
 
     private func writeFileResult(data: Data, for original: URL, plan: ClopPlan,
-                                 preferredExtension: String) throws {
+                                 resultType: UTType, preferredExtension: String) throws {
         switch plan.fileDestination {
         case .alongside:
             let sibling = ClopPlan.siblingURL(for: original, preferredExtension: preferredExtension) {
@@ -616,11 +687,28 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             Log.info("clop: wrote \(sibling.path)")
         case .replace:
             let backup = try backUp(original)
-            // .atomic writes to a temp file and renames, so a crash mid-write
-            // can never leave a truncated original.
-            try data.write(to: original, options: .atomic)
-            lastUndo = .file(original: original, backup: backup)
-            Log.info("clop: replaced \(original.path), backup at \(backup.path)")
+            let sameFormat = UTType(filenameExtension: original.pathExtension.lowercased()) == resultType
+            if sameFormat {
+                // .atomic writes to a temp file and renames, so a crash
+                // mid-write can never leave a truncated original.
+                try data.write(to: original, options: .atomic)
+                lastUndo = .file(original: original, backup: backup, replacement: nil)
+                Log.info("clop: replaced \(original.path), backup at \(backup.path)")
+            } else {
+                // Conversion in replace mode renames honestly: shot.png
+                // becomes shot.jpg rather than jpeg bytes hiding in a .png.
+                var renamed = original.deletingPathExtension()
+                    .appendingPathExtension(preferredExtension)
+                if FileManager.default.fileExists(atPath: renamed.path) {
+                    renamed = ClopPlan.siblingURL(for: original, preferredExtension: preferredExtension) {
+                        FileManager.default.fileExists(atPath: $0.path)
+                    }
+                }
+                try data.write(to: renamed, options: .atomic)
+                try FileManager.default.removeItem(at: original)
+                lastUndo = .file(original: original, backup: backup, replacement: renamed)
+                Log.info("clop: replaced \(original.path) with \(renamed.lastPathComponent), backup at \(backup.path)")
+            }
         }
     }
 
@@ -638,7 +726,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             // data under a .mov name still plays. The backup keeps the true original.
             let backup = try backUp(original)
             _ = try FileManager.default.replaceItemAt(original, withItemAt: temp)
-            lastUndo = .file(original: original, backup: backup)
+            lastUndo = .file(original: original, backup: backup, replacement: nil)
             Log.info("clop: replaced \(original.path), backup at \(backup.path)")
         }
     }
@@ -708,6 +796,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private func finish(result: String) {
         lastResult = result
         updateStatusIcon()
+        if settings.moduleBool(id: info.id, key: Key.toast) ?? true {
+            ClopToast.show(result)
+        }
     }
 
     private func updateStatusIcon() {
@@ -923,6 +1014,7 @@ private struct ClopSettingsPane: View {
     @State private var minSavingsPercent: Double
     @State private var skipBelowKB: Double
     @State private var destination: ClopPlan.FileDestination
+    @State private var showToast: Bool
 
     init(model: ClopPaneModel, settings: Settings) {
         self.model = model
@@ -943,6 +1035,7 @@ private struct ClopSettingsPane: View {
         _skipBelowKB = State(initialValue: Double(settings.moduleInt(id: id, key: ClopModule.Key.skipBelowKB) ?? 10))
         _destination = State(initialValue: settings.moduleString(id: id, key: ClopModule.Key.destination)
             .flatMap(ClopPlan.FileDestination.init) ?? .alongside)
+        _showToast = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.toast) ?? true)
     }
 
     var body: some View {
@@ -1048,6 +1141,15 @@ private struct ClopSettingsPane: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
+                DSToggleRow(
+                    title: "Show result toast",
+                    caption: "A brief floating readout of every outcome, including \u{201C}left untouched\u{201D} skips.",
+                    isOn: Binding(
+                        get: { showToast },
+                        set: {
+                            showToast = $0
+                            settings.setModuleBool($0, id: moduleID, key: ClopModule.Key.toast)
+                        }))
             }
 
             DSSettingsCard(title: "Files") {
@@ -1068,7 +1170,7 @@ private struct ClopSettingsPane: View {
                             dropZoneOn = $0
                             settings.setModuleBool($0, id: moduleID, key: ClopModule.Key.dropZone)
                         }))
-                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replaced files are backed up first. Files can also be dropped onto the menu bar icon.")
+                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replace backs the original up first; converting formats renames honestly, so shot.png becomes shot.jpg. Files can also be dropped onto the menu bar icon.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
                 Button("Show Backup Folder") { model.module?.revealBackupsFolder() }
@@ -1080,6 +1182,13 @@ private struct ClopSettingsPane: View {
                     label: "Optimize clipboard",
                     preset: settings.moduleHotkey(id: moduleID, defaultPreset: .disabled),
                     onChange: { model.module?.updateHotkey($0) })
+                HotkeyRecorderButton(
+                    label: "Optimize Finder selection",
+                    preset: model.module?.finderHotkey ?? .disabled,
+                    onChange: { model.module?.updateFinderHotkey($0) })
+                Text("The Finder shortcut reads the current selection (macOS asks once to allow controlling Finder). Right-clicking files also offers Services > Optimize with Clop.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsFaint)
             }
         }
     }

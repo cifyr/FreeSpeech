@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry: ModuleRegistry!
     private var speech: SpeechModule!
     private var controlCenter: ControlCenterWindowController!
+    private var clopServiceBridge: ClopServiceBridge!
 
     private var accessibilityPollTimer: Timer?
 
@@ -37,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                      ModuleCatalog.amphetamine] {
             registry.register(PlaceholderModule(info: info))
         }
+
+        // The provider lives at app level so the right-click service always
+        // resolves; it gates on the Clop module actually being enabled.
+        clopServiceBridge = ClopServiceBridge(registry: registry)
+        NSApp.servicesProvider = clopServiceBridge
 
         // No suite menu bar item: the Dock icon is the door into FreeKit now.
         controlCenter = ControlCenterWindowController(registry: registry)
