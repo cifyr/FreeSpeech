@@ -843,6 +843,8 @@ private struct StatsSettingsPane: View {
                     .foregroundStyle(Color.dsPaper)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                    // Live readouts roll to their new value on each refresh, never on first paint.
+                    .dsValueTransition(value)
             }
         }
     }
