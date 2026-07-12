@@ -20,6 +20,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     // Pause is runtime-only; a relaunch resumes watching like the card toggle.
     private var watching = true
     private var working = 0
+    // Discrete menu-bar icon states; a change (not a progress tick) crossfades.
+    private enum IconState { case working, paused, watching }
+    private var lastIconState: IconState?
     private var videoProgress: Double?
     private var lastSeenChangeCount = 0
     // changeCount of our own last pasteboard write; the Core gate dedupes on it
@@ -145,6 +148,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
                 item.button?.toolTip = "Clop compressor \u{2014} drop files here to optimize"
+                item.button?.wantsLayer = true  // lets the icon-state swap crossfade
                 if let button = item.button {
                     let drop = ClopDropView(frame: button.bounds)
                     drop.autoresizingMask = [.width, .height]
@@ -825,6 +829,17 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private func updateStatusIcon() {
         guard let button = statusItem?.button else { return }
         let paused = working == 0 && !watching
+        // Crossfade only on a real state change (watching/paused/working), never
+        // on the frequent video-progress text updates, so it stays flicker-free.
+        let state: IconState = working > 0 ? .working : (paused ? .paused : .watching)
+        if state != lastIconState, lastIconState != nil, !DS.reduceMotion, let layer = button.layer {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = DS.hudCrossfade
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(fade, forKey: "iconState")
+        }
+        lastIconState = state
         button.image = NSImage(
             systemSymbolName: paused ? "pause.rectangle" : "rectangle.compress.vertical",
             accessibilityDescription: working > 0 ? "Clop optimizing"

@@ -70,6 +70,9 @@ private struct ClopToastView: View {
                 .foregroundStyle(Color.dsPaper)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                // A back-to-back toast reuses the visible panel; crossfade the
+                // readout instead of snapping so the byte count settles calmly.
+                .dsContentCrossfade(model.message)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

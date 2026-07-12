@@ -189,6 +189,6 @@ private struct ClopDropZoneVisual: View {
                     model.targeted ? Color.dsAccent : Color.dsLine,
                     style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
         .padding(6)
-        .animation(.easeOut(duration: 0.12), value: model.targeted)
+        .animation(DS.animBase, value: model.targeted)
     }
 }
