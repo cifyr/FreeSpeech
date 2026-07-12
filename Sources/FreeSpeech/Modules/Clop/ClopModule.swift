@@ -60,6 +60,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         static let totalSavedBytes = "totalSavedBytes"
         static let totalItems = "totalItems"
         static let toast = "toast"
+        static let toastDuration = "toastDuration"  // seconds the result toast stays on screen
+        static let toastLocation = "toastLocation"
         static let finderHotkeyCode = "finderHotkeyKeyCode"
         static let finderHotkeyMods = "finderHotkeyModifiers"
     }
@@ -822,7 +824,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         lastResult = result
         updateStatusIcon()
         if settings.moduleBool(id: info.id, key: Key.toast) ?? true {
-            ClopToast.show(result)
+            let duration = settings.moduleDouble(id: info.id, key: Key.toastDuration) ?? 2.6
+            let location = settings.moduleString(id: info.id, key: Key.toastLocation)
+                .flatMap(ClopToastLocation.init) ?? .bottomCenter
+            ClopToast.show(result, duration: duration, location: location)
         }
     }
 
@@ -1051,6 +1056,8 @@ private struct ClopSettingsPane: View {
     @State private var skipBelowKB: Double
     @State private var destination: ClopPlan.FileDestination
     @State private var showToast: Bool
+    @State private var toastDuration: Double
+    @State private var toastLocation: ClopToastLocation
 
     init(model: ClopPaneModel, settings: Settings) {
         self.model = model
@@ -1072,6 +1079,9 @@ private struct ClopSettingsPane: View {
         _destination = State(initialValue: settings.moduleString(id: id, key: ClopModule.Key.destination)
             .flatMap(ClopPlan.FileDestination.init) ?? .alongside)
         _showToast = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.toast) ?? true)
+        _toastDuration = State(initialValue: settings.moduleDouble(id: id, key: ClopModule.Key.toastDuration) ?? 2.6)
+        _toastLocation = State(initialValue: settings.moduleString(id: id, key: ClopModule.Key.toastLocation)
+            .flatMap(ClopToastLocation.init) ?? .bottomCenter)
     }
 
     var body: some View {
@@ -1186,6 +1196,32 @@ private struct ClopSettingsPane: View {
                             showToast = $0
                             settings.setModuleBool($0, id: moduleID, key: ClopModule.Key.toast)
                         }))
+                if showToast {
+                    optionRow("Time on screen") {
+                        DSNumberField(
+                            placeholder: "sec", value: $toastDuration,
+                            range: 0.5...15, fractionDigits: 1,
+                            onCommit: { settings.setModuleDouble($0, id: moduleID, key: ClopModule.Key.toastDuration) })
+                        Text("seconds before the toast fades")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsFaint)
+                    }
+                    optionRow("Location") {
+                        chip("Bottom", selected: toastLocation.isBottom) {
+                            setToastLocation(.make(bottom: true, align: toastLocation.align))
+                        }
+                        chip("Top", selected: !toastLocation.isBottom) {
+                            setToastLocation(.make(bottom: false, align: toastLocation.align))
+                        }
+                    }
+                    optionRow("Align") {
+                        ForEach(ClopToastLocation.Align.allCases, id: \.self) { value in
+                            chip(value.title, selected: toastLocation.align == value) {
+                                setToastLocation(.make(bottom: toastLocation.isBottom, align: value))
+                            }
+                        }
+                    }
+                }
             }
 
             DSSettingsCard(title: "Files") {
@@ -1246,6 +1282,11 @@ private struct ClopSettingsPane: View {
     private func setLossless(_ on: Bool) {
         lossless = on
         settings.setModuleBool(on, id: moduleID, key: ClopModule.Key.lossless)
+    }
+
+    private func setToastLocation(_ location: ClopToastLocation) {
+        toastLocation = location
+        settings.setModuleString(location.rawValue, id: moduleID, key: ClopModule.Key.toastLocation)
     }
 
     private func optionRow<Content: View>(
