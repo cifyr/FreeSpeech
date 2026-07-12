@@ -142,6 +142,40 @@ final class ClopPlanTests: XCTestCase {
         XCTAssertEqual(sibling.path, "/tmp/photo (clopped 3).jpg")
     }
 
+    // The keep-format half is what makes replace mode safe: forcing .keep means
+    // the encoder returns the source type, so writeFileResult takes its
+    // same-format branch and the file keeps its exact path and extension.
+    func testKeepOriginalHalfForcesKeepFormat() {
+        let plan = ClopPlan(outputFormat: .jpeg).applying(.keepOriginal)
+        XCTAssertEqual(plan.outputFormat, .keep)
+    }
+
+    func testConvertHalfUsesConfiguredFormat() {
+        XCTAssertEqual(ClopPlan(outputFormat: .heic).applying(.convert).outputFormat, .heic)
+        XCTAssertEqual(ClopPlan(outputFormat: .jpeg).applying(.convert).outputFormat, .jpeg)
+    }
+
+    // Converting with the setting already on "keep" has no target format to aim
+    // at, so it falls back to JPEG rather than silently doing nothing.
+    func testConvertHalfFallsBackToJPEGWhenSettingIsKeep() {
+        XCTAssertEqual(ClopPlan(outputFormat: .keep).applying(.convert).outputFormat, .jpeg)
+    }
+
+    // The mode only ever rewrites the format; nothing else about the plan moves.
+    func testFormatModeLeavesRestOfPlanIntact() {
+        let plan = ClopPlan(imagesEnabled: true, videosEnabled: true, quality: 0.6,
+                            maxDimension: 2048, outputFormat: .jpeg,
+                            minimumSavings: 0.2, fileDestination: .replace)
+        for mode in ClopPlan.FormatMode.allCases {
+            let applied = plan.applying(mode)
+            XCTAssertEqual(applied.quality, plan.quality)
+            XCTAssertEqual(applied.maxDimension, plan.maxDimension)
+            XCTAssertEqual(applied.minimumSavings, plan.minimumSavings)
+            XCTAssertEqual(applied.fileDestination, plan.fileDestination)
+            XCTAssertEqual(applied.videosEnabled, plan.videosEnabled)
+        }
+    }
+
     func testSiblingNameSwapsExtensionOnConversion() {
         let url = URL(fileURLWithPath: "/tmp/shot.png")
         let sibling = ClopPlan.siblingURL(for: url, preferredExtension: "jpg") { _ in false }

@@ -7,7 +7,7 @@ import FreeSpeechCore
 // showing) the menu bar icon. Driven by the module's poll loop: the drag
 // pasteboard's changeCount only moves when a drag session starts.
 final class ClopDropZoneController {
-    var onDrop: (([URL]) -> Void)?
+    var onDrop: (([URL], ClopPlan.FormatMode) -> Void)?
     private var panel: NSPanel?
     private var lastDragChangeCount: Int
     private(set) var isVisible = false
@@ -62,7 +62,7 @@ final class ClopDropZoneController {
     }
 
     private func makePanel() -> NSPanel {
-        let size = NSSize(width: 230, height: 110)
+        let size = NSSize(width: 320, height: 118)
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -74,12 +74,23 @@ final class ClopDropZoneController {
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
-        let target = ClopDropTargetView(frame: NSRect(origin: .zero, size: size))
-        target.onDrop = { [weak self] urls in
-            self?.hide()
-            self?.onDrop?(urls)
+
+        // Two independent drop targets side by side: which half catches the file
+        // decides whether its format survives.
+        let container = NSView(frame: NSRect(origin: .zero, size: size))
+        let halfWidth = size.width / 2
+        for (index, mode) in [ClopPlan.FormatMode.keepOriginal, .convert].enumerated() {
+            let frame = NSRect(x: CGFloat(index) * halfWidth, y: 0,
+                               width: halfWidth, height: size.height)
+            let target = ClopDropTargetView(frame: frame, mode: mode)
+            target.autoresizingMask = [.width, .height]
+            target.onDrop = { [weak self] urls, mode in
+                self?.hide()
+                self?.onDrop?(urls, mode)
+            }
+            container.addSubview(target)
         }
-        panel.contentView = target
+        panel.contentView = container
         return panel
     }
 }
@@ -87,10 +98,13 @@ final class ClopDropZoneController {
 // The drag destination. Visuals live in a hosted SwiftUI view; drags resolve
 // to this container because only it registers for the file type.
 private final class ClopDropTargetView: NSView {
-    var onDrop: (([URL]) -> Void)?
-    private let model = ClopDropZoneVisualModel()
+    var onDrop: (([URL], ClopPlan.FormatMode) -> Void)?
+    private let model: ClopDropZoneVisualModel
+    private let mode: ClopPlan.FormatMode
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, mode: ClopPlan.FormatMode) {
+        self.mode = mode
+        self.model = ClopDropZoneVisualModel(mode: mode)
         super.init(frame: frameRect)
         registerForDraggedTypes([.fileURL])
         let hosting = NSHostingView(rootView: ClopDropZoneVisual(model: model))
@@ -100,8 +114,7 @@ private final class ClopDropTargetView: NSView {
     }
 
     required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        registerForDraggedTypes([.fileURL])
+        fatalError("init(coder:) is unused: the drop zone is built in code")
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -118,8 +131,8 @@ private final class ClopDropTargetView: NSView {
         model.targeted = false
         let urls = supportedURLs(from: sender)
         guard !urls.isEmpty else { return false }
-        Log.info("clop: \(urls.count) file(s) dropped on drop zone")
-        onDrop?(urls)
+        Log.info("clop: \(urls.count) file(s) dropped on drop zone (\(mode.rawValue))")
+        onDrop?(urls, mode)
         return true
     }
 
@@ -132,33 +145,50 @@ private final class ClopDropTargetView: NSView {
 
 private final class ClopDropZoneVisualModel: ObservableObject {
     @Published var targeted = false
+    let mode: ClopPlan.FormatMode
+
+    init(mode: ClopPlan.FormatMode) {
+        self.mode = mode
+    }
 }
 
 private struct ClopDropZoneVisual: View {
     @ObservedObject var model: ClopDropZoneVisualModel
 
+    private var symbol: String {
+        model.mode == .keepOriginal ? "arrow.down.circle" : "arrow.triangle.2.circlepath"
+    }
+
+    private var title: String {
+        model.mode == .keepOriginal ? "Keep format" : "Convert"
+    }
+
+    private var caption: String {
+        model.mode == .keepOriginal ? "PNG stays PNG" : "To JPEG / MP4"
+    }
+
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: 22, weight: .medium))
+        VStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(model.targeted ? Color.dsAccent : Color.dsMuted)
-            Text("Drop to optimize")
+            Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.dsPaper)
-            Text("Images, videos, PDFs")
-                .font(.system(size: 11))
+            Text(caption)
+                .font(.system(size: 10))
                 .foregroundStyle(Color.dsFaint)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.dsInk1.opacity(0.97)))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(
                     model.targeted ? Color.dsAccent : Color.dsLine,
                     style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
-        .padding(8)
+        .padding(6)
         .animation(.easeOut(duration: 0.12), value: model.targeted)
     }
 }

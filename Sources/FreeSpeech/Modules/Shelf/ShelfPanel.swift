@@ -98,7 +98,10 @@ final class ShelfPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        panel.isMovableByWindowBackground = true
+        // Background dragging would consume the mouse drag AppKit needs to hand
+        // to a row's .onDrag, so pulling a file off the shelf would just slide
+        // the whole panel. The header strip is the drag handle instead.
+        panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
         let root = ShelfPanelView(store: store, onClose: { [weak self] in self?.close() })
@@ -127,6 +130,9 @@ private struct ShelfPanelView: View {
                 Spacer()
                 CloseButton(action: onClose)
             }
+            // Only the header moves the panel; everywhere else the mouse drag
+            // has to stay available for dragging files out.
+            .background(WindowDragHandle())
             if store.items.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray.and.arrow.down")
@@ -181,6 +187,20 @@ private struct ShelfPanelView: View {
             }
         }
         group.notify(queue: .main) { completion(urls) }
+    }
+}
+
+// Borderless panels have no title bar to grab. This hands mouseDown straight to
+// the window so the header behaves like one, leaving the rest of the panel's
+// mouse drags free for file drags.
+private struct WindowDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { DragHandleView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class DragHandleView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
     }
 }
 

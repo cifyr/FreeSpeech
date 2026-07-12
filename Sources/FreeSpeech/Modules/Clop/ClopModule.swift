@@ -123,7 +123,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             }
         }
         paneModel.module = self
-        dropZone.onDrop = { [weak self] urls in self?.optimizeFiles(urls) }
+        dropZone.onDrop = { [weak self] urls, mode in self?.optimizeFiles(urls, mode: mode) }
         startPollingIfNeeded()
         Log.info("clop: activated, watching clipboard")
     }
@@ -565,10 +565,14 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    func optimizeFiles(_ urls: [URL]) {
-        let plan = Self.currentPlan(settings: settings)
+    // `mode` comes from the half of the drop zone the file landed on; nil means
+    // the caller (menu bar, Finder selection, open panel) takes the plan as the
+    // settings have it.
+    func optimizeFiles(_ urls: [URL], mode: ClopPlan.FormatMode? = nil) {
+        let configured = Self.currentPlan(settings: settings)
+        let plan = mode.map { configured.applying($0) } ?? configured
         let preset = videoPreset.avPreset
-        Log.info("clop: optimizing \(urls.count) file(s), destination=\(plan.fileDestination.rawValue)")
+        Log.info("clop: optimizing \(urls.count) file(s), destination=\(plan.fileDestination.rawValue), format=\(plan.outputFormat.rawValue)\(mode.map { " (\($0.rawValue) half)" } ?? "")")
         runTracked { [self] in
             beginWork()
             var optimizedCount = 0
@@ -586,7 +590,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 batchProgress = (index, urls.count)
                 updateStatusIcon()
                 do {
-                    if let sizes = try await optimizeFile(url, plan: plan, preset: preset) {
+                    if let sizes = try await optimizeFile(url, plan: plan, preset: preset,
+                                                         mode: mode) {
                         optimizedCount += 1
                         totalOriginal += sizes.original
                         totalOptimized += sizes.optimized
@@ -626,8 +631,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     // Returns nil when the file was skipped (unsupported or not smaller).
     // Explicitly picked files bypass the watch toggles and size floor; the
     // keep-if-smaller rule still applies to every one of them.
-    private func optimizeFile(_ url: URL, plan: ClopPlan,
-                              preset: String) async throws -> (original: Int, optimized: Int)? {
+    private func optimizeFile(_ url: URL, plan: ClopPlan, preset: String,
+                              mode: ClopPlan.FormatMode?) async throws -> (original: Int, optimized: Int)? {
         guard let mediaType = ClopOptimizer.mediaType(forFileExtension: url.pathExtension) else {
             Log.info("clop: skipped \(url.lastPathComponent): unsupported type")
             return nil
@@ -671,7 +676,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 try? FileManager.default.removeItem(at: outputURL)
                 return nil
             }
-            try moveFileResult(from: outputURL, for: url, plan: plan)
+            try moveFileResult(from: outputURL, for: url, plan: plan, mode: mode)
             return (originalBytes, optimizedBytes)
         }
     }
@@ -712,22 +717,38 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    private func moveFileResult(from temp: URL, for original: URL, plan: ClopPlan) throws {
+    private func moveFileResult(from temp: URL, for original: URL, plan: ClopPlan,
+                                mode: ClopPlan.FormatMode?) throws {
+        let ext = ClopPlan.videoConvertedExtension
         switch plan.fileDestination {
         case .alongside:
-            let sibling = ClopPlan.siblingURL(for: original, preferredExtension: "mp4") {
+            let sibling = ClopPlan.siblingURL(for: original, preferredExtension: ext) {
                 FileManager.default.fileExists(atPath: $0.path)
             }
             try FileManager.default.moveItem(at: temp, to: sibling)
             Log.info("clop: wrote \(sibling.path)")
         case .replace:
-            // The path (and any .mov extension) is preserved even though the
-            // container is now mp4: renaming would break references, and mp4
-            // data under a .mov name still plays. The backup keeps the true original.
             let backup = try backUp(original)
-            _ = try FileManager.default.replaceItemAt(original, withItemAt: temp)
-            lastUndo = .file(original: original, backup: backup, replacement: nil)
-            Log.info("clop: replaced \(original.path), backup at \(backup.path)")
+            // Only the convert half renames the container honestly. Otherwise the
+            // path (and any .mov extension) is preserved: renaming would break
+            // references, and mp4 data under a .mov name still plays.
+            let alreadyMP4 = original.pathExtension.lowercased() == ext
+            guard mode == .convert, !alreadyMP4 else {
+                _ = try FileManager.default.replaceItemAt(original, withItemAt: temp)
+                lastUndo = .file(original: original, backup: backup, replacement: nil)
+                Log.info("clop: replaced \(original.path), backup at \(backup.path)")
+                return
+            }
+            var renamed = original.deletingPathExtension().appendingPathExtension(ext)
+            if FileManager.default.fileExists(atPath: renamed.path) {
+                renamed = ClopPlan.siblingURL(for: original, preferredExtension: ext) {
+                    FileManager.default.fileExists(atPath: $0.path)
+                }
+            }
+            try FileManager.default.moveItem(at: temp, to: renamed)
+            try FileManager.default.removeItem(at: original)
+            lastUndo = .file(original: original, backup: backup, replacement: renamed)
+            Log.info("clop: replaced \(original.path) with \(renamed.lastPathComponent), backup at \(backup.path)")
         }
     }
 

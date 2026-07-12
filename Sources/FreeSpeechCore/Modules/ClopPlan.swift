@@ -31,6 +31,38 @@ public struct ClopPlan: Equatable {
         }
     }
 
+    // Which half of the drop zone the file landed on. Keeping the original
+    // format is what makes replace mode safe: the file keeps its exact path and
+    // extension, so a dropped PNG stays a (smaller) PNG instead of turning into
+    // a JPEG and leaving its old path empty.
+    public enum FormatMode: String, CaseIterable {
+        case keepOriginal, convert
+
+        public var displayName: String {
+            switch self {
+            case .keepOriginal: return "Keep format"
+            case .convert: return "Convert"
+            }
+        }
+    }
+
+    // Video always exports as mp4, so "convert" is what lets the extension
+    // follow the container; keepOriginal leaves the name alone.
+    public static let videoConvertedExtension = "mp4"
+
+    public func applying(_ mode: FormatMode) -> ClopPlan {
+        var copy = self
+        switch mode {
+        case .keepOriginal:
+            copy.outputFormat = .keep
+        case .convert:
+            // "Convert" needs a format to aim at; a plan already set to keep has
+            // none, so fall back to the usual baseline for images.
+            copy.outputFormat = outputFormat == .keep ? .jpeg : outputFormat
+        }
+        return copy
+    }
+
     public enum SkipReason: String, Equatable {
         case ownWrite, typeDisabled, belowSizeFloor
     }
