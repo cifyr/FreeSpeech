@@ -89,30 +89,39 @@ struct HistoryView: View {
                     Text(model.query.isEmpty ? "No dictations yet" : "No matches")
                         .font(.system(size: 15))
                         .foregroundStyle(Color.dsMuted)
+                        .dsContentCrossfade(model.query.isEmpty)
                     Text(model.query.isEmpty
                          ? "Hold your hotkey and speak - every insertion lands here."
                          : "Try a shorter search.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
+                        .dsContentCrossfade(model.query.isEmpty)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, 48)
+                .transition(.dsAppear)
                 Spacer()
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.entries) { entry in
+                        ForEach(Array(model.entries.enumerated()), id: \.element.id) { index, entry in
                             row(entry)
+                                .transition(.dsAppear)
+                                .animation(DS.animAppear(index: index), value: entryIDs)
                         }
                     }
                 }
+                .transition(.dsCrossfade)
             }
         }
         .padding(20)
         .frame(width: 520, height: 560)
         .background(AppearanceBackground())
+        .animation(DS.animCrossfade, value: model.entries.isEmpty)
         .onAppear { model.refresh() }
     }
+
+    private var entryIDs: [Date] { model.entries.map(\.id) }
 
     private func row(_ entry: HistoryEntry) -> some View {
         HistoryRow(entry: entry, model: model, timeFormatter: Self.timeFormatter)
@@ -125,6 +134,8 @@ private struct HistoryRow: View {
     let model: HistoryViewModel
     let timeFormatter: DateFormatter
     @State private var hovering = false
+    @State private var flash: String?
+    @State private var flashTrigger = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -144,11 +155,19 @@ private struct HistoryRow: View {
                         .foregroundStyle(Color.dsAccent)
                 }
                 Spacer()
+                if let flash {
+                    Text(flash.uppercased())
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .kerning(1.0)
+                        .foregroundStyle(Color.dsMuted)
+                        .transition(.dsCrossfade)
+                }
                 HStack(spacing: 12) {
-                    hoverButton("Copy") { model.copy(entry) }
-                    hoverButton("Insert") { model.onInsert(entry.text) }
+                    hoverButton("Copy") { model.copy(entry); confirm("Copied") }
+                    hoverButton("Insert") { model.onInsert(entry.text); confirm("Inserted") }
                 }
                 .opacity(hovering ? 1 : 0)
+                .animation(DS.animBase, value: hovering)
             }
             Text(entry.text)
                 .font(.system(size: 13))
@@ -164,7 +183,17 @@ private struct HistoryRow: View {
             RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
                 .strokeBorder(Color.dsLine, lineWidth: 1))
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: DS.durInstant), value: hovering)
+        // task id restarts the fade timer on every confirm, even a repeat action.
+        .task(id: flashTrigger) {
+            guard flash != nil else { return }
+            try? await Task.sleep(nanoseconds: 1_100_000_000)
+            withAnimation(DS.animCrossfade) { flash = nil }
+        }
+    }
+
+    private func confirm(_ label: String) {
+        withAnimation(DS.animCrossfade) { flash = label }
+        flashTrigger += 1
     }
 
     private func hoverButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -183,9 +212,9 @@ private struct HistoryActionButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(hovering ? Color.dsAccent : Color.dsMuted)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.dsPress)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: DS.durInstant), value: hovering)
+        .animation(DS.animInstant, value: hovering)
     }
 }
 
