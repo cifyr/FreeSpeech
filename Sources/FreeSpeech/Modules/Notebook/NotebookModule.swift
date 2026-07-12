@@ -591,6 +591,8 @@ struct NotebookView: View {
                             showPreview: config.showPreviews,
                             onSelect: { model.select(note.id) },
                             onDelete: { model.delete(note.id) })
+                            .transition(.dsAppear)
+                            .animation(DS.animBase, value: model.notes.count)
                     }
                 }
             }
@@ -898,7 +900,8 @@ private struct NoteRow: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(Color.dsMuted)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.dsPress)
+                        .transition(.opacity)
                     }
                 }
                 if showPreview, !preview.isEmpty {
@@ -923,6 +926,7 @@ private struct NoteRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(DS.animInstant, value: hovering)
     }
 
     private var preview: String {
