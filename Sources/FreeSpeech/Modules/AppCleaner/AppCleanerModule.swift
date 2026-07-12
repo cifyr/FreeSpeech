@@ -351,6 +351,7 @@ struct AppCleanerView: View {
         Group {
             if let result = model.removalResult {
                 removalComplete(result)
+                    .transition(.dsCrossfade)
             } else {
                 VStack(spacing: 12) {
                     toolbar
@@ -362,8 +363,10 @@ struct AppCleanerView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 }
+                .transition(.dsCrossfade)
             }
         }
+        .animation(DS.animCrossfade, value: model.removalResult != nil)
         .frame(height: 500)
         .alert("Move \(pendingRemoval?.name ?? "app") to Trash?", isPresented: Binding(
             get: { pendingRemoval != nil },
@@ -508,7 +511,8 @@ struct AppCleanerView: View {
                             .background(model.selectedID == app.id ? Color.dsInk3 : Color.clear,
                                         in: RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.dsPress)
+                        .animation(DS.animInstant, value: model.selectedID)
                     }
                 }
             }
