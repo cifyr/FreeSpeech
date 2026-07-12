@@ -81,6 +81,9 @@ enum ClopOptimizer {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw ClopError.unreadableImage(detail: "\(data.count) bytes, unrecognized data")
         }
+        if plan.lossless {
+            return losslessRewrite(source: source, originalData: data, sourceHint: sourceHint)
+        }
         // Flattening a multi-frame GIF to one frame would lose the animation,
         // which counts as destroying data no matter how many bytes it saves.
         let frameCount = CGImageSourceGetCount(source)
@@ -149,6 +152,78 @@ enum ClopOptimizer {
         }
         return ImageResult(data: out as Data, type: outputType,
                            pixelWidth: cgImage.width, pixelHeight: cgImage.height)
+    }
+
+    // Pixels are never re-encoded here: CGImageDestinationCopyImageSource
+    // rewrites the container as-is with metadata replaced by an empty set
+    // (EXIF/GPS/XMP stripped). Animated GIFs pass through intact because
+    // nothing is flattened. For PNGs a full re-encode is also tried; PNG is a
+    // lossless format, so that path is pixel-identical too and sometimes
+    // compresses better. The keep-if-smaller rule upstream discards whichever
+    // result did not help.
+    private static func losslessRewrite(source: CGImageSource, originalData: Data,
+                                        sourceHint: UTType?) -> ImageResult {
+        let sourceType = sourceHint
+            ?? (CGImageSourceGetType(source) as String?).flatMap { UTType($0) } ?? .png
+        let frameCount = max(1, CGImageSourceGetCount(source))
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+
+        // Some formats (GIF today) refuse lossless metadata modification, so
+        // fall back to a plain lossless copy, and past that to the original
+        // bytes untouched: lossless mode must never fail on a passthrough,
+        // and keep-if-smaller upstream reports an unchanged payload honestly.
+        let stripOptions: [CFString: Any] = [
+            kCGImageDestinationMetadata: CGImageMetadataCreateMutable(),
+            kCGImageDestinationMergeMetadata: false,
+        ]
+        var best: Data
+        if let stripped = losslessCopy(source: source, type: sourceType,
+                                       frameCount: frameCount, options: stripOptions) {
+            best = stripped
+        } else if let copied = losslessCopy(source: source, type: sourceType,
+                                            frameCount: frameCount, options: nil) {
+            Log.info("clop: lossless metadata strip unsupported for \(sourceType.identifier), kept metadata")
+            best = copied
+        } else {
+            Log.info("clop: lossless rewrite unsupported for \(sourceType.identifier), passing original through")
+            best = originalData
+        }
+
+        if sourceType == .png, frameCount == 1,
+           let cgImage = CGImageSourceCreateImageAtIndex(source, 0, [
+               kCGImageSourceShouldCacheImmediately: true,
+           ] as CFDictionary) {
+            let reencoded = NSMutableData()
+            if let pngDestination = CGImageDestinationCreateWithData(
+                reencoded, UTType.png.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(pngDestination, cgImage, nil)
+                if CGImageDestinationFinalize(pngDestination),
+                   reencoded.length > 0, reencoded.length < best.count {
+                    best = reencoded as Data
+                }
+            }
+        }
+        return ImageResult(data: best, type: sourceType,
+                           pixelWidth: width, pixelHeight: height)
+    }
+
+    private static func losslessCopy(source: CGImageSource, type: UTType,
+                                     frameCount: Int, options: [CFString: Any]?) -> Data? {
+        let out = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            out, type.identifier as CFString, frameCount, nil) else { return nil }
+        var copyError: Unmanaged<CFError>?
+        guard CGImageDestinationCopyImageSource(destination, source,
+                                                options as CFDictionary?, &copyError),
+              out.length > 0 else {
+            if let copyError {
+                Log.info("clop: lossless copy for \(type.identifier) failed: \(copyError.takeRetainedValue())")
+            }
+            return nil
+        }
+        return out as Data
     }
 
     // An alpha channel in the pixel format does not mean actual transparency

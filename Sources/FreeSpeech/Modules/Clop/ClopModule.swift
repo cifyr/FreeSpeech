@@ -31,6 +31,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var batchProgress: (done: Int, total: Int)?
     private let paneModel = ClopPaneModel()
+    private let dropZone = ClopDropZoneController()
     private lazy var settingsWindow = ModuleSettingsWindowController(
         info: info,
         contentSize: NSSize(width: 640, height: 760),
@@ -44,6 +45,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         static let videos = "videos"
         static let pdfs = "pdfs"
         static let quality = "quality"
+        static let lossless = "lossless"
+        static let dropZone = "dropZone"
         static let maxDimension = "maxDimension"  // 0 = no downscale
         static let format = "format"
         static let minSavings = "minSavings"      // fraction, not percent
@@ -77,6 +80,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             videosEnabled: settings.moduleBool(id: id, key: Key.videos) ?? false,
             pdfsEnabled: settings.moduleBool(id: id, key: Key.pdfs) ?? false,
             quality: settings.moduleDouble(id: id, key: Key.quality) ?? 0.75,
+            lossless: settings.moduleBool(id: id, key: Key.lossless) ?? false,
             maxDimension: maxDimension > 0 ? maxDimension : nil,
             // JPEG default: HEIC is smaller, but JPEG pastes into everything.
             outputFormat: settings.moduleString(id: id, key: Key.format)
@@ -107,6 +111,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             }
         }
         paneModel.module = self
+        dropZone.onDrop = { [weak self] urls in self?.optimizeFiles(urls) }
         startPollingIfNeeded()
         Log.info("clop: activated, watching clipboard")
     }
@@ -114,6 +119,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     func deactivate() {
         active = false
         stopPolling()
+        dropZone.hide()
         cancelAllWork()
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
@@ -128,6 +134,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
                 if let button = item.button {
                     let drop = ClopDropView(frame: button.bounds)
                     drop.autoresizingMask = [.width, .height]
+                    drop.toolTip = button.toolTip
                     drop.onDrop = { [weak self] urls in
                         Log.info("clop: \(urls.count) file(s) dropped on menu bar item")
                         self?.optimizeFiles(urls)
@@ -162,8 +169,11 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     // MARK: - Clipboard watcher
 
+    // The timer runs for the whole active lifetime: it drives both the
+    // clipboard watcher (gated on `watching`) and the drop-zone detector,
+    // which stays live even while clipboard watching is paused.
     private func startPollingIfNeeded() {
-        guard active, watching, pollTimer == nil else { return }
+        guard active, pollTimer == nil else { return }
         // Only fresh copies are fair game: whatever was already on the
         // clipboard when watching started stays untouched.
         lastSeenChangeCount = NSPasteboard.general.changeCount
@@ -182,13 +192,27 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     func setWatching(_ on: Bool) {
         watching = on
-        if on { startPollingIfNeeded() } else { stopPolling() }
+        if on {
+            // Skip whatever was copied while paused; resuming must not
+            // retroactively process stale clipboard contents.
+            lastSeenChangeCount = NSPasteboard.general.changeCount
+        }
         Log.info("clop: watching \(on ? "resumed" : "paused")")
         updateStatusIcon()
     }
 
+    private var dropZoneEnabled: Bool {
+        settings.moduleBool(id: info.id, key: Key.dropZone) ?? true
+    }
+
     private func poll() {
-        guard active, watching else { return }
+        guard active else { return }
+        if dropZoneEnabled {
+            dropZone.tick()
+        } else if dropZone.isVisible {
+            dropZone.hide()
+        }
+        guard watching else { return }
         let pasteboard = NSPasteboard.general
         let changeCount = pasteboard.changeCount
         guard changeCount != lastSeenChangeCount else { return }
@@ -803,9 +827,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     }
 }
 
-// Transparent overlay on the status-item button that accepts file drags.
-// hitTest returns nil so clicks fall through to the button and its menu; drag
-// destination lookup goes by registered types, not hitTest, so drops still land.
+// Transparent overlay on the status-item button that accepts file drags. It
+// stays hit-testable (suppressing hitTest also suppressed drag delivery), so
+// mouse clicks are forwarded to the button underneath to keep the menu working.
 private final class ClopDropView: NSView {
     var onDrop: (([URL]) -> Void)?
 
@@ -819,7 +843,17 @@ private final class ClopDropView: NSView {
         registerForDraggedTypes([.fileURL])
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func mouseDown(with event: NSEvent) {
+        (superview as? NSControl)?.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        (superview as? NSControl)?.rightMouseDown(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        (superview as? NSControl)?.otherMouseDown(with: event)
+    }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         supportedURLs(from: sender).isEmpty ? [] : .copy
@@ -881,6 +915,8 @@ private struct ClopSettingsPane: View {
     @State private var watchVideos: Bool
     @State private var watchPDFs: Bool
     @State private var quality: Double
+    @State private var lossless: Bool
+    @State private var dropZoneOn: Bool
     @State private var maxDimension: Double
     @State private var format: ClopPlan.OutputFormat
     @State private var videoPreset: ClopVideoPreset
@@ -896,6 +932,8 @@ private struct ClopSettingsPane: View {
         _watchVideos = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.videos) ?? false)
         _watchPDFs = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.pdfs) ?? false)
         _quality = State(initialValue: settings.moduleDouble(id: id, key: ClopModule.Key.quality) ?? 0.75)
+        _lossless = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.lossless) ?? false)
+        _dropZoneOn = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.dropZone) ?? true)
         _maxDimension = State(initialValue: Double(settings.moduleInt(id: id, key: ClopModule.Key.maxDimension) ?? 0))
         _format = State(initialValue: settings.moduleString(id: id, key: ClopModule.Key.format)
             .flatMap(ClopPlan.OutputFormat.init) ?? .jpeg)
@@ -929,8 +967,12 @@ private struct ClopSettingsPane: View {
 
             DSSettingsCard(title: "Images") {
                 optionRow("Quality") {
+                    chip("Lossless", selected: lossless) {
+                        setLossless(true)
+                    }
                     ForEach([(0.5, "Small"), (0.75, "Balanced"), (0.9, "High")], id: \.0) { value, title in
-                        chip(title, selected: abs(quality - value) < 0.0001) {
+                        chip(title, selected: !lossless && abs(quality - value) < 0.0001) {
+                            setLossless(false)
                             quality = value
                             settings.setModuleDouble(value, id: moduleID, key: ClopModule.Key.quality)
                         }
@@ -938,33 +980,42 @@ private struct ClopSettingsPane: View {
                     DSNumberField(
                         placeholder: "0\u{2013}1", value: $quality,
                         range: ClopPlan.qualityRange, fractionDigits: 2,
-                        onCommit: { settings.setModuleDouble($0, id: moduleID, key: ClopModule.Key.quality) })
+                        onCommit: {
+                            setLossless(false)
+                            settings.setModuleDouble($0, id: moduleID, key: ClopModule.Key.quality)
+                        })
                 }
-                optionRow("Max size") {
-                    ForEach([0, 1440, 2160, 3840], id: \.self) { value in
-                        chip(value == 0 ? "Off" : "\(value)", selected: Int(maxDimension) == value) {
-                            setMaxDimension(Double(value))
+                if lossless {
+                    Text("Lossless keeps every pixel: metadata (EXIF/GPS) is stripped and PNGs are recompressed. Savings are modest but quality is byte-identical. Animated GIFs pass through intact.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
+                } else {
+                    optionRow("Max size") {
+                        ForEach([0, 1440, 2160, 3840], id: \.self) { value in
+                            chip(value == 0 ? "Off" : "\(value)", selected: Int(maxDimension) == value) {
+                                setMaxDimension(Double(value))
+                            }
+                        }
+                        DSNumberField(
+                            placeholder: "px", value: $maxDimension,
+                            range: 0...10_000, fractionDigits: 0,
+                            onCommit: { setMaxDimension($0) })
+                        Text("px")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsFaint)
+                    }
+                    optionRow("Format") {
+                        ForEach(ClopPlan.OutputFormat.allCases, id: \.rawValue) { value in
+                            chip(value.displayName, selected: format == value) {
+                                format = value
+                                settings.setModuleString(value.rawValue, id: moduleID, key: ClopModule.Key.format)
+                            }
                         }
                     }
-                    DSNumberField(
-                        placeholder: "px", value: $maxDimension,
-                        range: 0...10_000, fractionDigits: 0,
-                        onCommit: { setMaxDimension($0) })
-                    Text("px")
+                    Text("JPEG pastes everywhere; HEIC is smaller but some apps reject it. Transparent images keep their own format so JPEG never mattes them onto a solid background. Replace-in-place file runs always keep the original format.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
-                optionRow("Format") {
-                    ForEach(ClopPlan.OutputFormat.allCases, id: \.rawValue) { value in
-                        chip(value.displayName, selected: format == value) {
-                            format = value
-                            settings.setModuleString(value.rawValue, id: moduleID, key: ClopModule.Key.format)
-                        }
-                    }
-                }
-                Text("JPEG pastes everywhere; HEIC is smaller but some apps reject it. Transparent images keep their own format so JPEG never mattes them onto a solid background. Replace-in-place file runs always keep the original format.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
             }
 
             DSSettingsCard(title: "Videos") {
@@ -1008,7 +1059,16 @@ private struct ClopSettingsPane: View {
                         }
                     }
                 }
-                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replaced files are backed up first. Files can also be dropped straight onto the menu bar icon.")
+                DSToggleRow(
+                    title: "Drop zone while dragging",
+                    caption: "A floating catcher appears at the bottom of the screen while you drag; it accepts images, videos, and PDFs.",
+                    isOn: Binding(
+                        get: { dropZoneOn },
+                        set: {
+                            dropZoneOn = $0
+                            settings.setModuleBool($0, id: moduleID, key: ClopModule.Key.dropZone)
+                        }))
+                Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replaced files are backed up first. Files can also be dropped onto the menu bar icon.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
                 Button("Show Backup Folder") { model.module?.revealBackupsFolder() }
@@ -1036,6 +1096,11 @@ private struct ClopSettingsPane: View {
     private func setMaxDimension(_ value: Double) {
         maxDimension = value.rounded()
         settings.setModuleInt(Int(maxDimension), id: moduleID, key: ClopModule.Key.maxDimension)
+    }
+
+    private func setLossless(_ on: Bool) {
+        lossless = on
+        settings.setModuleBool(on, id: moduleID, key: ClopModule.Key.lossless)
     }
 
     private func optionRow<Content: View>(

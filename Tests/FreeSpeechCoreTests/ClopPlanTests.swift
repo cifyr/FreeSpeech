@@ -56,6 +56,11 @@ final class ClopPlanTests: XCTestCase {
         XCTAssertEqual(ClopPlan(skipBelowBytes: -5).skipBelowBytes, 0)
     }
 
+    func testLosslessDefaultsOffAndCarries() {
+        XCTAssertFalse(ClopPlan().lossless)
+        XCTAssertTrue(ClopPlan(lossless: true).lossless)
+    }
+
     // MARK: - targetSize
 
     func testTargetSizeFitsLongestEdge() {

@@ -49,6 +49,9 @@ public struct ClopPlan: Equatable {
     public var videosEnabled: Bool
     public var pdfsEnabled: Bool
     public var quality: Double
+    // Lossless never touches pixels: metadata is stripped and the container
+    // rewritten, so quality, downscale, and format conversion do not apply.
+    public var lossless: Bool
     // nil = no downscale.
     public var maxDimension: Int?
     public var outputFormat: OutputFormat
@@ -60,6 +63,7 @@ public struct ClopPlan: Equatable {
 
     public init(imagesEnabled: Bool = true, videosEnabled: Bool = false,
                 pdfsEnabled: Bool = false, quality: Double = 0.75,
+                lossless: Bool = false,
                 maxDimension: Int? = nil, outputFormat: OutputFormat = .jpeg,
                 minimumSavings: Double = 0.10, skipBelowBytes: Int = 10_240,
                 fileDestination: FileDestination = .alongside) {
@@ -67,6 +71,7 @@ public struct ClopPlan: Equatable {
         self.videosEnabled = videosEnabled
         self.pdfsEnabled = pdfsEnabled
         self.quality = min(max(quality, Self.qualityRange.lowerBound), Self.qualityRange.upperBound)
+        self.lossless = lossless
         // A tiny cap would destroy images; anything under 64px means "off" was intended.
         self.maxDimension = maxDimension.flatMap { $0 >= 64 ? $0 : nil }
         self.outputFormat = outputFormat
