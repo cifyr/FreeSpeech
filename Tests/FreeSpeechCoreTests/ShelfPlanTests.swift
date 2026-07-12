@@ -2,7 +2,7 @@ import XCTest
 @testable import FreeSpeechCore
 
 final class ShelfPlanTests: XCTestCase {
-    private let config = ShelfPlan.Sensitivity.medium.config
+    private let config = ShelfPlan.config(forSensitivity: ShelfPlan.defaultSensitivity)
 
     // Zigzag with 30pt swings every 50ms: reversals land well inside the window.
     private func runZigzag(detector: inout ShakeDetector, swings: Int,
@@ -37,7 +37,7 @@ final class ShelfPlanTests: XCTestCase {
     func testSmallJitterNeverFires() {
         var detector = ShakeDetector(config: config)
         _ = detector.addSample(x: 0, time: 0)
-        // 5pt flips are hand tremor, far below the 22pt medium swing floor.
+        // 5pt flips are hand tremor, far below the default sensitivity's swing floor.
         XCTAssertFalse(runZigzag(detector: &detector, swings: 40, amplitude: 5,
                                  secondsPerSwing: 0.03))
     }
@@ -45,7 +45,9 @@ final class ShelfPlanTests: XCTestCase {
     func testSlowZigzagFallsOutOfWindow() {
         var detector = ShakeDetector(config: config)
         _ = detector.addSample(x: 0, time: 0)
-        // Big swings, but 0.5s apart: at most two reversals ever share the 0.9s window.
+        // Big swings, but 0.5s apart: consecutive reversals fall outside the
+        // (well under 1s) window as fast as new ones arrive, so the in-window
+        // count never climbs past two, however long this runs.
         XCTAssertFalse(runZigzag(detector: &detector, swings: 12, amplitude: 40,
                                  secondsPerSwing: 0.5))
     }
@@ -74,18 +76,18 @@ final class ShelfPlanTests: XCTestCase {
     }
 
     func testHigherSensitivityFiresOnGentlerShake() {
-        var eager = ShakeDetector(config: ShelfPlan.Sensitivity.high.config)
-        var strict = ShakeDetector(config: ShelfPlan.Sensitivity.low.config)
+        var eager = ShakeDetector(config: ShelfPlan.config(forSensitivity: 1))
+        var strict = ShakeDetector(config: ShelfPlan.config(forSensitivity: 0))
         _ = eager.addSample(x: 0, time: 0)
         _ = strict.addSample(x: 0, time: 0)
-        // 24pt swings clear the high floor (22) but not the low floor (36).
-        XCTAssertTrue(runZigzag(detector: &eager, swings: 6, amplitude: 24,
+        // 15pt swings clear the High-end floor (5pt) but not the Low-end floor (24pt).
+        XCTAssertTrue(runZigzag(detector: &eager, swings: 6, amplitude: 15,
                                 secondsPerSwing: 0.06))
-        XCTAssertFalse(runZigzag(detector: &strict, swings: 6, amplitude: 24,
+        XCTAssertFalse(runZigzag(detector: &strict, swings: 6, amplitude: 15,
                                  secondsPerSwing: 0.06))
     }
 
-    func testCasualFlickDoesNotFireMedium() {
+    func testCasualFlickDoesNotFireAtDefaultSensitivity() {
         var detector = ShakeDetector(config: config)
         _ = detector.addSample(x: 0, time: 0)
         // A quick two-swing flick while repositioning a file must stay quiet.
@@ -98,5 +100,18 @@ final class ShelfPlanTests: XCTestCase {
         XCTAssertEqual(config.minReversals, 2)
         XCTAssertEqual(config.window, 0.1)
         XCTAssertEqual(config.minSwing, 1)
+    }
+
+    func testSensitivityIsClampedAndMonotonic() {
+        let belowRange = ShelfPlan.config(forSensitivity: -5)
+        let atLow = ShelfPlan.config(forSensitivity: 0)
+        let atHigh = ShelfPlan.config(forSensitivity: 1)
+        let aboveRange = ShelfPlan.config(forSensitivity: 5)
+        XCTAssertEqual(belowRange, atLow)
+        XCTAssertEqual(aboveRange, atHigh)
+        // Higher sensitivity always means less required movement.
+        XCTAssertLessThan(atHigh.minReversals, atLow.minReversals)
+        XCTAssertLessThan(atHigh.minSwing, atLow.minSwing)
+        XCTAssertLessThan(atHigh.window, atLow.window)
     }
 }

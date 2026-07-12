@@ -5,27 +5,21 @@ import Foundation
 // with real travel behind it, packed into a short window — jitter and normal
 // dragging never qualify.
 public enum ShelfPlan {
-    public enum Sensitivity: String, CaseIterable {
-        case low, medium, high
+    // Continuous 0...1 dial (a slider, not presets). 0 = Low: needs a good
+    // second of real, sizable shaking. 1 = High: almost any small wiggle
+    // fires it. Reversal count and swing distance are what actually make it
+    // easier or harder; window only shrinks a little at the High end so a
+    // couple of tiny wiggles still read as "fast enough". At every setting
+    // the window stays short enough that a slow, deliberate drag can never
+    // accumulate enough in-window reversals to fire on its own.
+    public static let defaultSensitivity = 0.5
 
-        public var displayName: String {
-            switch self {
-            case .low: return "Low"
-            case .medium: return "Medium"
-            case .high: return "High"
-            }
-        }
-
-        // Higher sensitivity = fewer, shorter swings needed. Tuned strict on
-        // purpose: ordinary dragging has incidental reversals, and a shelf
-        // that pops during normal work erodes trust fast.
-        public var config: ShakeDetector.Config {
-            switch self {
-            case .low: return ShakeDetector.Config(minReversals: 6, window: 0.7, minSwing: 36)
-            case .medium: return ShakeDetector.Config(minReversals: 5, window: 0.8, minSwing: 30)
-            case .high: return ShakeDetector.Config(minReversals: 4, window: 0.9, minSwing: 22)
-            }
-        }
+    public static func config(forSensitivity value: Double) -> ShakeDetector.Config {
+        let t = min(max(value, 0), 1)
+        return ShakeDetector.Config(
+            minReversals: Int((6 - 4 * t).rounded()),
+            window: 0.9 - 0.3 * t,
+            minSwing: 24 - 19 * t)
     }
 }
 

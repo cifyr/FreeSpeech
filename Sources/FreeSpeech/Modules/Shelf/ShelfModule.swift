@@ -30,15 +30,14 @@ final class ShelfModule: NSObject, AppModule {
 
     init(settings: Settings) {
         self.settings = settings
-        detector = ShakeDetector(config: ShelfPlan.Sensitivity.low.config)
+        detector = ShakeDetector(config: ShelfPlan.config(forSensitivity: ShelfPlan.defaultSensitivity))
         super.init()
     }
 
-    // Low by default: an over-eager shelf during ordinary drags reads as a
-    // bug, and the settings chip is right there for anyone who wants it easier.
-    private var sensitivity: ShelfPlan.Sensitivity {
-        settings.moduleString(id: info.id, key: Key.sensitivity)
-            .flatMap(ShelfPlan.Sensitivity.init) ?? .low
+    // 0 (Low) ... 1 (High) dial; the settings slider is right there for
+    // anyone who wants it easier or stricter.
+    private var sensitivity: Double {
+        settings.moduleDouble(id: info.id, key: Key.sensitivity) ?? ShelfPlan.defaultSensitivity
     }
 
     private var keepOnClose: Bool {
@@ -61,7 +60,7 @@ final class ShelfModule: NSObject, AppModule {
             }
         }
         paneModel.module = self
-        Log.info("shelf: activated, sensitivity=\(sensitivity.rawValue)")
+        Log.info("shelf: activated, sensitivity=\(String(format: "%.2f", sensitivity))")
     }
 
     func deactivate() {
@@ -97,7 +96,7 @@ final class ShelfModule: NSObject, AppModule {
                 // Fresh drag pasteboard = a new drag session just started.
                 lastDragChangeCount = dragCount
                 dragSessionActive = true
-                detector = ShakeDetector(config: sensitivity.config)
+                detector = ShakeDetector(config: ShelfPlan.config(forSensitivity: sensitivity))
             }
             guard dragSessionActive, !panelController.isVisible else { return }
             let location = NSEvent.mouseLocation
@@ -133,35 +132,35 @@ private struct ShelfSettingsPane: View {
     let settings: Settings
 
     private let moduleID = ModuleCatalog.shelf.id
-    @State private var sensitivity: ShelfPlan.Sensitivity
+    @State private var sensitivity: Double
     @State private var keepOnClose: Bool
 
     init(model: ShelfPaneModel, settings: Settings) {
         self.model = model
         self.settings = settings
         let id = ModuleCatalog.shelf.id
-        _sensitivity = State(initialValue: settings.moduleString(id: id, key: ShelfModule.Key.sensitivity)
-            .flatMap(ShelfPlan.Sensitivity.init) ?? .medium)
+        _sensitivity = State(initialValue: settings.moduleDouble(id: id, key: ShelfModule.Key.sensitivity)
+            ?? ShelfPlan.defaultSensitivity)
         _keepOnClose = State(initialValue: settings.moduleBool(id: id, key: ShelfModule.Key.keepOnClose) ?? false)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Shake") {
-                HStack(spacing: 8) {
-                    Text("Sensitivity")
+                HStack(spacing: 10) {
+                    Text("Low")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
-                        .frame(width: 80, alignment: .leading)
-                    ForEach(ShelfPlan.Sensitivity.allCases, id: \.rawValue) { value in
-                        DSChip(title: value.displayName, selected: sensitivity == value) {
-                            sensitivity = value
-                            settings.setModuleString(value.rawValue, id: moduleID,
-                                                     key: ShelfModule.Key.sensitivity)
-                        }
-                        .fixedSize()
-                    }
-                    Spacer()
+                    Slider(value: Binding(
+                        get: { sensitivity },
+                        set: {
+                            sensitivity = $0
+                            settings.setModuleDouble($0, id: moduleID, key: ShelfModule.Key.sensitivity)
+                        }), in: 0...1)
+                        .tint(Color.dsAccent)
+                    Text("High")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
                 }
                 Text("Wiggle side to side while dragging and the shelf appears under the cursor. Any drag can summon it; the shelf itself only accepts files.")
                     .font(.system(size: 11))

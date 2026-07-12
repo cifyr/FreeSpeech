@@ -50,6 +50,10 @@ final class ShelfPanelController {
 
     private var panel: NSPanel?
     private(set) var isVisible = false
+    // Local catches clicks in our own app's windows, global catches everywhere
+    // else; a borderless .nonactivatingPanel never becomes key, so there's no
+    // resignKey notification to hook a dismiss-on-outside-click off of.
+    private var outsideClickMonitors: [Any] = []
 
     private static let panelSize = NSSize(width: 270, height: 280)
 
@@ -75,6 +79,7 @@ final class ShelfPanelController {
             panel.dsFadeIn()
         }
         isVisible = true
+        installOutsideClickMonitors()
         Log.info("shelf: panel shown (\(store.items.count) item(s))")
         onVisibilityChange?()
     }
@@ -83,9 +88,36 @@ final class ShelfPanelController {
         guard isVisible else { return }
         panel?.dsFadeOut()
         isVisible = false
+        removeOutsideClickMonitors()
         if !keepItemsOnClose { store.clear() }
         Log.info("shelf: panel closed")
         onVisibilityChange?()
+    }
+
+    // An empty shelf is just a target waiting to be dismissed: any click
+    // elsewhere closes it. Once something's parked, an accidental click
+    // shouldn't drop it, so only the X closes it from there on.
+    private func installOutsideClickMonitors() {
+        removeOutsideClickMonitors()
+        let handler: (NSEvent) -> Void = { [weak self] _ in self?.dismissIfEmptyClickOutside() }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: handler) {
+            outsideClickMonitors.append(global)
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            handler(event)
+            return event
+        }
+        if let local { outsideClickMonitors.append(local) }
+    }
+
+    private func removeOutsideClickMonitors() {
+        outsideClickMonitors.forEach { NSEvent.removeMonitor($0) }
+        outsideClickMonitors.removeAll()
+    }
+
+    private func dismissIfEmptyClickOutside() {
+        guard isVisible, store.items.isEmpty, let panel, !panel.frame.contains(NSEvent.mouseLocation) else { return }
+        close()
     }
 
     private func makePanel() -> NSPanel {
@@ -194,8 +226,9 @@ private struct ShelfPanelView: View {
 
 // Borderless panels have no title bar to grab. This hands mouseDown straight to
 // the window so the header behaves like one, leaving the rest of the panel's
-// mouse drags free for file drags.
-private struct WindowDragHandle: NSViewRepresentable {
+// mouse drags free for file drags. Shared with ModuleSettingsWindow, whose
+// hidden-titlebar windows have the same problem.
+struct WindowDragHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { DragHandleView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
 

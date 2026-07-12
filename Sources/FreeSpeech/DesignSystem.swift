@@ -322,16 +322,28 @@ enum DSMotionAppKit {
         }, completionHandler: completion)
     }
 
+    // Same fade + small vertical settle the HUD and app windows use, so every
+    // floating panel in the suite reads as one motion language.
     static func fadeIn(_ panel: NSPanel, duration: TimeInterval = DS.hudCrossfade) {
+        let target = panel.frame
         panel.alphaValue = 0
+        if !reduceMotion { panel.setFrame(target.offsetBy(dx: 0, dy: -6), display: false) }
         panel.orderFrontRegardless()
-        run(duration: duration) { _ in panel.animator().alphaValue = 1 }
+        run(duration: duration) { _ in
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(target, display: true)
+        }
     }
 
     static func fadeOut(_ panel: NSPanel, duration: TimeInterval = DS.hudCrossfade) {
-        run(duration: duration, { _ in panel.animator().alphaValue = 0 }) { [weak panel] in
+        let target = panel.frame
+        run(duration: duration, { _ in
+            panel.animator().alphaValue = 0
+            if !reduceMotion { panel.animator().setFrame(target.offsetBy(dx: 0, dy: -6), display: true) }
+        }) { [weak panel] in
             panel?.orderOut(nil)
             panel?.alphaValue = 1
+            panel?.setFrame(target, display: false)
         }
     }
 
