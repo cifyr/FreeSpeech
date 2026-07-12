@@ -71,6 +71,11 @@ public enum ModuleCatalog {
         summary: "Per-device pointer acceleration and scroll direction control.",
         symbolName: "computermouse", status: .comingSoon, ownsMenuBarItem: true)
 
+    public static let amphetamine = ModuleInfo(
+        id: "amphetamine", displayName: "Amphetamine",
+        summary: "Keep the Mac awake on demand: timed sessions and triggers instead of sleep.",
+        symbolName: "pills", status: .comingSoon, ownsMenuBarItem: true)
+
     public static let clop = ModuleInfo(
         id: "clop", displayName: "Clop",
         summary: "Automatic image, video, and PDF compression on copy.",
@@ -89,7 +94,7 @@ public enum ModuleCatalog {
 
     public static let all: [ModuleInfo] = [
         speech, notebook, autoclicker, stats, capsLock,
-        cotypist, appCleaner, linearMouse, clop, shelf, boringNotch,
+        cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch,
     ]
 
     // Tools that read as small apps rather than ambient utilities; the control
