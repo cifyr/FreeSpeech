@@ -2,95 +2,9 @@ import AppKit
 import SwiftUI
 import FreeSpeechCore
 
-// One Greenlight-styled settings window per module, hosting the module's
-// settings pane. Speech keeps its original tabbed window; everything else
-// gets this shell so settings live with the tool, not in the control center.
-final class ModuleSettingsWindowController {
-    private var window: NSWindow?
-    private let info: ModuleInfo
-    private let contentSize: NSSize
-    private let minimumSize: NSSize
-    private let makePane: () -> AnyView
-    // App-style modules key their menu bar presence off this: true on show,
-    // false when the user closes the window.
-    var onVisibilityChange: ((Bool) -> Void)?
-
-    init(
-        info: ModuleInfo,
-        contentSize: NSSize = NSSize(width: 540, height: 620),
-        minimumSize: NSSize = NSSize(width: 480, height: 360),
-        makePane: @escaping () -> AnyView
-    ) {
-        self.info = info
-        self.contentSize = contentSize
-        self.minimumSize = minimumSize
-        self.makePane = makePane
-    }
-
-    func show() {
-        if window == nil {
-            let root = ModuleSettingsContainer(info: info, pane: makePane())
-            let hosting = NSHostingController(rootView: root)
-            let w = NSWindow(contentViewController: hosting)
-            w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-            w.title = "\(info.displayName) Settings"
-            w.titlebarAppearsTransparent = true
-            w.titleVisibility = .hidden
-            w.appearance = NSAppearance(named: .darkAqua)
-            w.backgroundColor = DS.ink0
-            w.minSize = minimumSize
-            w.setContentSize(contentSize)
-            w.isReleasedWhenClosed = false
-            w.center()
-            NotificationCenter.default.addObserver(
-                forName: NSWindow.willCloseNotification, object: w, queue: .main
-            ) { [weak self] _ in
-                self?.onVisibilityChange?(false)
-            }
-            window = w
-        }
-        if let window { DSMotionAppKit.presentWindow(window) }
-        NSApp.activate(ignoringOtherApps: true)
-        onVisibilityChange?(true)
-        Log.info("settings window opened: \(info.id)")
-    }
-}
-
-private struct ModuleSettingsContainer: View {
-    let info: ModuleInfo
-    let pane: AnyView
-    @ObservedObject private var appearance = AppearanceManager.shared
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("FREEKIT / \(info.displayName.uppercased())")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .kerning(1.2)
-                    .foregroundStyle(Color.dsAccent)
-                Text("Settings")
-                    .font(.system(size: 28, weight: .heavy))
-                    .foregroundStyle(Color.dsPaper)
-            }
-            // Hidden titlebar leaves nothing to grab; only the header drags the
-            // window, so sliders/buttons further down keep their own gestures
-            // instead of losing mouseDown to a window-wide move.
-            .background(WindowDragHandle())
-            ScrollView {
-                pane
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.bottom, 16)
-            }
-            HStack { Spacer(); SuiteUpdateButton() }
-        }
-        .padding(20)
-        .frame(minWidth: 480, maxWidth: .infinity,
-               minHeight: 360, maxHeight: .infinity)
-        .background(AppearanceBackground())
-        // First time a tool's settings open, show its short how-to.
-        .moduleGuide(for: info)
-    }
-}
+// Shared building blocks every module's settings pane is built from. The
+// panes themselves are hosted as a modal popup inside the Control Center
+// window — see ControlCenterWindow.swift's ModuleSettingsCard.
 
 // MARK: - Shared pane building blocks
 

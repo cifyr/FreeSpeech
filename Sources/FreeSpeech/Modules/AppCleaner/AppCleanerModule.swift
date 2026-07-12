@@ -9,24 +9,17 @@ final class AppCleanerModule: NSObject, AppModule {
     private let config: AppCleanerConfig
     private let model: AppCleanerViewModel
     private var statusItem: NSStatusItem?
-    private lazy var settingsWindow: ModuleSettingsWindowController = {
-        let controller = ModuleSettingsWindowController(
-            info: info,
-            contentSize: NSSize(width: 820, height: 650),
-            minimumSize: NSSize(width: 680, height: 480)
-        ) { [config, model] in
-            AnyView(AppCleanerView(model: model, config: config))
-        }
-        controller.onVisibilityChange = { [weak self] visible in
-            self?.setStatusItemVisible(visible)
-        }
-        return controller
-    }()
+    private var presentationCancellable: AnyCancellable?
 
     init(settings: Settings) {
         config = AppCleanerConfig(settings: settings)
         model = AppCleanerViewModel()
         super.init()
+        let id = info.id
+        presentationCancellable = ControlCenterPresenter.shared.$presentedModuleID
+            .map { $0 == id }
+            .removeDuplicates()
+            .sink { [weak self] visible in self?.setStatusItemVisible(visible) }
     }
 
     // Scanning waits for openSettings: an "app" that isn't open should not be
@@ -57,10 +50,11 @@ final class AppCleanerModule: NSObject, AppModule {
         statusItem?.isVisible = visible
     }
 
-    var settingsStyle: ModuleSettingsStyle { .window }
-    func makeSettingsPane() -> AnyView { AnyView(EmptyView()) }
+    var settingsStyle: ModuleSettingsStyle { .popup }
+    var settingsPopupSize: NSSize { NSSize(width: 820, height: 650) }
+    func makeSettingsPane() -> AnyView { AnyView(AppCleanerView(model: model, config: config)) }
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
         if model.apps.isEmpty { model.scan(includeSystemApps: config.includeSystemApps) }
     }
 

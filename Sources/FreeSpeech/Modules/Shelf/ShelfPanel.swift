@@ -48,6 +48,8 @@ final class ShelfPanelController {
     var keepItemsOnClose = false
     var onVisibilityChange: (() -> Void)?
 
+    private let settings: Settings
+    private let moduleID: String
     private var panel: NSPanel?
     private(set) var isVisible = false
     // Local catches clicks in our own app's windows, global catches everywhere
@@ -56,6 +58,11 @@ final class ShelfPanelController {
     private var outsideClickMonitors: [Any] = []
 
     private static let panelSize = NSSize(width: 270, height: 280)
+
+    init(settings: Settings, moduleID: String) {
+        self.settings = settings
+        self.moduleID = moduleID
+    }
 
     func show(near point: NSPoint) {
         if panel == nil { panel = makePanel() }
@@ -136,7 +143,15 @@ final class ShelfPanelController {
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
-        let root = ShelfPanelView(store: store, onClose: { [weak self] in self?.close() })
+        let settings = self.settings
+        let moduleID = self.moduleID
+        let root = ShelfPanelView(
+            store: store,
+            initialIconView: settings.moduleBool(id: moduleID, key: ShelfModule.Key.iconView) ?? false,
+            onClose: { [weak self] in self?.close() },
+            onViewModeChange: { iconView in
+                settings.setModuleBool(iconView, id: moduleID, key: ShelfModule.Key.iconView)
+            })
         panel.contentView = NSHostingView(rootView: root)
         return panel
     }
@@ -145,7 +160,20 @@ final class ShelfPanelController {
 private struct ShelfPanelView: View {
     @ObservedObject var store: ShelfStore
     var onClose: () -> Void
+    var onViewModeChange: (Bool) -> Void
     @State private var targeted = false
+    // Set at construction, not via .onAppear: this panel's content view is
+    // built once and reused across every show(), and .onAppear is not
+    // reliably called again on a hidden-then-reshown NSHostingView.
+    @State private var iconView: Bool
+
+    init(store: ShelfStore, initialIconView: Bool, onClose: @escaping () -> Void,
+         onViewModeChange: @escaping (Bool) -> Void) {
+        self.store = store
+        self.onClose = onClose
+        self.onViewModeChange = onViewModeChange
+        _iconView = State(initialValue: initialIconView)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -160,6 +188,9 @@ private struct ShelfPanelView: View {
                         .foregroundStyle(Color.dsFaint)
                 }
                 Spacer()
+                ViewModeToggle(iconView: Binding(
+                    get: { iconView },
+                    set: { iconView = $0; onViewModeChange($0) }))
                 CloseButton(action: onClose)
             }
             // Only the header moves the panel; everywhere else the mouse drag
@@ -178,6 +209,11 @@ private struct ShelfPanelView: View {
                         .foregroundStyle(Color.dsFaint)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if iconView {
+                ScrollView {
+                    ShelfIconGrid(items: store.items) { store.remove($0) }
+                        .padding(.top, 2)
+                }
             } else {
                 ScrollView {
                     VStack(spacing: 4) {
@@ -257,6 +293,29 @@ private struct CloseButton: View {
     }
 }
 
+// Finder-style list/icons switch, tucked in the header next to the count.
+private struct ViewModeToggle: View {
+    @Binding var iconView: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            modeButton("list.bullet", selected: !iconView) { iconView = false }
+            modeButton("square.grid.2x2", selected: iconView) { iconView = true }
+        }
+    }
+
+    private func modeButton(_ systemName: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(selected ? Color.dsAccent : Color.dsMuted)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct ShelfRow: View {
     let item: ShelfItem
     let onRemove: () -> Void
@@ -298,6 +357,64 @@ private struct ShelfRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous)
                 .strokeBorder(Color.dsLine, lineWidth: 1))
+        .onHover { hovering = $0 }
+        .animation(DS.animInstant, value: hovering)
+        // Standard file-URL drag: the destination sees the same URL a Finder
+        // drag would deliver, so drops into folders, Slack, or mail all work.
+        .onDrag { NSItemProvider(object: item.url as NSURL) }
+    }
+}
+
+private struct ShelfIconGrid: View {
+    let items: [ShelfItem]
+    let onRemove: (ShelfItem) -> Void
+    private let columns = [GridItem(.adaptive(minimum: 64, maximum: 64), spacing: 8)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                ShelfIconCell(item: item) { onRemove(item) }
+                    .transition(.dsAppear)
+                    .animation(DS.animAppear(index: index), value: items.count)
+            }
+        }
+    }
+}
+
+private struct ShelfIconCell: View {
+    let item: ShelfItem
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ZStack(alignment: .topTrailing) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
+                    .resizable()
+                    .frame(width: 40, height: 40)
+                if hovering {
+                    Button(action: onRemove) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color.dsPaper, Color.dsInk1)
+                    }
+                    .buttonStyle(.dsPress)
+                    .offset(x: 6, y: -6)
+                    .transition(.opacity)
+                }
+            }
+            Text(item.name)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(Color.dsPaper)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .truncationMode(.middle)
+        }
+        .frame(width: 64)
+        .padding(6)
+        .background(
+            hovering ? Color.dsInk3 : Color.clear,
+            in: RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous))
         .onHover { hovering = $0 }
         .animation(DS.animInstant, value: hovering)
         // Standard file-URL drag: the destination sees the same URL a Finder

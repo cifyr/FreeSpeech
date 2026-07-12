@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import FreeSpeechCore
 
@@ -21,20 +22,7 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
     private let macroRunner = MacroRunner()
     private let paneModel = AutoclickPaneModel()
     private var settingsWindowOpen = false
-    private lazy var settingsWindow: ModuleSettingsWindowController = {
-        let controller = ModuleSettingsWindowController(
-            info: info,
-            contentSize: NSSize(width: 640, height: 720),
-            minimumSize: NSSize(width: 560, height: 480)
-        ) { [weak self] in
-            self?.makeSettingsPane() ?? AnyView(EmptyView())
-        }
-        controller.onVisibilityChange = { [weak self] visible in
-            self?.settingsWindowOpen = visible
-            self?.updateStatusIcon()
-        }
-        return controller
-    }()
+    private var presentationCancellable: AnyCancellable?
 
     enum Key {
         static let interval = "interval"
@@ -86,6 +74,14 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
         self.hub = hub
         self.permissionCoach = permissionCoach
         super.init()
+        let id = info.id
+        presentationCancellable = ControlCenterPresenter.shared.$presentedModuleID
+            .map { $0 == id }
+            .removeDuplicates()
+            .sink { [weak self] visible in
+                self?.settingsWindowOpen = visible
+                self?.updateStatusIcon()
+            }
     }
 
     private var hotkey: HotkeyPreset {
@@ -148,8 +144,10 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
     // is false). Presence is derived in updateStatusIcon instead.
     func setMenuBarItemVisible(_ visible: Bool) {}
 
+    var settingsPopupSize: NSSize { NSSize(width: 640, height: 720) }
+
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {

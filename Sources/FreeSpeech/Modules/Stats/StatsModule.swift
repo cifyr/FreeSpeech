@@ -103,13 +103,6 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
     private let menu = NSMenu()
     private var menuBarVisible = false
     private var active = false
-    private lazy var settingsWindow = ModuleSettingsWindowController(
-        info: info,
-        contentSize: NSSize(width: 640, height: 720),
-        minimumSize: NSSize(width: 560, height: 480)
-    ) { [weak self] in
-        self?.makeSettingsPane() ?? AnyView(EmptyView())
-    }
 
     enum Key {
         static let refreshInterval = "refreshInterval"
@@ -217,8 +210,10 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         applyMenuBarConfiguration()
     }
 
+    var settingsPopupSize: NSSize { NSSize(width: 640, height: 720) }
+
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {

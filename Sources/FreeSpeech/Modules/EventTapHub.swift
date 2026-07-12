@@ -141,19 +141,25 @@ final class EventTapHub {
         default: return false
         }
 
-        // The focused recorder's local monitor must receive the raw event, but
-        // no global shortcut or remap may react while that recorder is active.
+        // Rewriters (the Caps Lock -> Hyper remap) must keep running even while
+        // a recorder is capturing: the recorder's local NSEvent monitor only
+        // sees Hyper-key chords because this rewrite already folded the hold
+        // flags in. Skipping it here made Hyper combos impossible to record.
+        for rewriter in rewriters {
+            if case .swallow = rewriter.rewrite(kind: kind, event: event) {
+                return true
+            }
+        }
+
+        // The focused recorder's local monitor must receive the (possibly
+        // rewritten) event, but no already-registered hotkey may fire while
+        // it's active — otherwise recording a new binding could trigger an
+        // old one mid-capture.
         if ShortcutCaptureGate.isActive {
             for token in tokens {
                 token.recognizer.reset(preset: token.recognizer.preset)
             }
             return false
-        }
-
-        for rewriter in rewriters {
-            if case .swallow = rewriter.rewrite(kind: kind, event: event) {
-                return true
-            }
         }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)

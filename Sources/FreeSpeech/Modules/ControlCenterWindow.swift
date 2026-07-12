@@ -4,12 +4,37 @@ import ServiceManagement
 import SwiftUI
 import FreeSpeechCore
 
+// Bridges "open this module's settings" (Control Center's own gear/Open
+// button, a module's status-bar menu, or its own floating panel) into one
+// place: the modal popup lives inside the Control Center window, so
+// presenting it means bringing that window forward first.
+final class ControlCenterPresenter: ObservableObject {
+    static let shared = ControlCenterPresenter()
+    @Published private(set) var presentedModuleID: String?
+    fileprivate var showControlCenter: (() -> Void)?
+
+    private init() {}
+
+    func present(moduleID: String) {
+        showControlCenter?()
+        presentedModuleID = moduleID
+    }
+
+    func dismiss() {
+        presentedModuleID = nil
+    }
+}
+
 final class ControlCenterWindowController {
     private var window: NSWindow?
     private let registry: ModuleRegistry
+    private var presenterCancellable: AnyCancellable?
+    // The frame to restore once the popup closes; nil while no popup is open.
+    private var preSettingsFrame: NSRect?
 
     init(registry: ModuleRegistry) {
         self.registry = registry
+        ControlCenterPresenter.shared.showControlCenter = { [weak self] in self?.show() }
     }
 
     func show() {
@@ -29,10 +54,33 @@ final class ControlCenterWindowController {
             w.isReleasedWhenClosed = false
             w.center()
             window = w
+            presenterCancellable = ControlCenterPresenter.shared.$presentedModuleID
+                .removeDuplicates()
+                .sink { [weak self] id in self?.resizeForPresentedModule(id) }
         }
         if let window { DSMotionAppKit.presentWindow(window) }
         NSApp.activate(ignoringOtherApps: true)
         Log.info("control center opened")
+    }
+
+    // Grows the window to fit the popup (never shrinks below whatever size it
+    // already was) and restores the exact pre-popup frame once it closes.
+    private func resizeForPresentedModule(_ id: String?) {
+        guard let window else { return }
+        if let id, let module = registry.module(id: id) {
+            if preSettingsFrame == nil { preSettingsFrame = window.frame }
+            let current = window.contentRect(forFrameRect: window.frame).size
+            let ideal = module.settingsPopupSize
+            // Popup card floats with a 32pt gutter on every side (see
+            // ModuleSettingsCard) so the host window needs that much extra room.
+            let target = NSSize(
+                width: max(current.width, ideal.width + 64),
+                height: max(current.height, ideal.height + 64))
+            DSMotionAppKit.resizeWindow(window, toContentSize: target)
+        } else if let restore = preSettingsFrame {
+            DSMotionAppKit.resizeWindow(window, toFrame: restore)
+            preSettingsFrame = nil
+        }
     }
 }
 
@@ -41,6 +89,7 @@ final class ControlCenterWindowController {
 struct ControlCenterView: View {
     @ObservedObject var registry: ModuleRegistry
     @ObservedObject private var appearance = AppearanceManager.shared
+    @ObservedObject private var presenter = ControlCenterPresenter.shared
     @State private var expandedID: String?
     @State private var selectedSection: Section = .apps
 
@@ -69,6 +118,42 @@ struct ControlCenterView: View {
     }
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            mainContent
+            if let id = presenter.presentedModuleID, let module = registry.module(id: id) {
+                settingsPopup(for: module)
+            }
+        }
+        .animation(DS.animExpand(), value: presenter.presentedModuleID)
+    }
+
+    @ViewBuilder
+    private func settingsPopup(for module: AppModule) -> some View {
+        Color(nsColor: DS.glass)
+            .ignoresSafeArea()
+            .contentShape(Rectangle())
+            .onTapGesture { presenter.dismiss() }
+            .transition(.opacity)
+        ModuleSettingsCard(module: module)
+            .padding(32)
+            .transition(.dsAppear)
+        Button {
+            presenter.dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.dsPaper)
+                .frame(width: 30, height: 30)
+                .background(Color.dsInk2, in: Circle())
+                .overlay(Circle().strokeBorder(Color.dsLine, lineWidth: 1))
+        }
+        .buttonStyle(.dsPress)
+        .help("Back")
+        .padding(14)
+        .transition(.opacity)
+    }
+
+    private var mainContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("FREEKIT")
@@ -127,6 +212,50 @@ struct ControlCenterView: View {
         .frame(minWidth: 560, idealWidth: 600, maxWidth: .infinity,
                minHeight: 480, idealHeight: 720, maxHeight: .infinity)
         .background(AppearanceBackground())
+    }
+}
+
+// A module's settings, floated as a modal card inside the Control Center
+// window instead of a separate NSWindow. Speech's own tabbed view already
+// renders a title/scroll of its own (popupUsesOwnChrome), so it's hosted edge
+// to edge; every other module gets the shared kicker + "Settings" header.
+private struct ModuleSettingsCard: View {
+    let module: AppModule
+
+    var body: some View {
+        Group {
+            if module.popupUsesOwnChrome {
+                module.makeSettingsPane()
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("FREEKIT / \(module.info.displayName.uppercased())")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .kerning(1.2)
+                            .foregroundStyle(Color.dsAccent)
+                        Text("Settings")
+                            .font(.system(size: 28, weight: .heavy))
+                            .foregroundStyle(Color.dsPaper)
+                    }
+                    ScrollView {
+                        module.makeSettingsPane()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 16)
+                    }
+                    HStack { Spacer(); SuiteUpdateButton() }
+                }
+                .padding(20)
+                // First time this tool's settings open, show its short how-to.
+                .moduleGuide(for: module.info)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.dsInk1, in: RoundedRectangle(cornerRadius: DS.radiusSheet, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DS.radiusSheet, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.radiusSheet, style: .continuous)
+                .strokeBorder(Color.dsLine, lineWidth: 1))
+        .shadow(color: .black.opacity(0.4), radius: 26, y: 12)
     }
 }
 
@@ -519,11 +648,11 @@ private struct ModuleCard: View {
                         .buttonStyle(PrimaryButtonStyle())
                         .help("Open \(info.displayName)")
                     }
-                    // Rich tools open their own settings window; simple ones
-                    // (Caps Lock) disclose the few controls right here. App
-                    // cards skip the gear — Open reaches the same window.
+                    // Rich tools open a settings popup; simple ones (Caps
+                    // Lock) disclose the few controls right here. App cards
+                    // skip the gear — Open reaches the same popup.
                     switch registry.module(id: info.id)?.settingsStyle {
-                    case .window where !showsOpenButton:
+                    case .popup where !showsOpenButton:
                         Button {
                             registry.module(id: info.id)?.openSettings()
                         } label: {

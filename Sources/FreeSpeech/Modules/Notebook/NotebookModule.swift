@@ -16,13 +16,6 @@ final class NotebookModule: NSObject, AppModule, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var panel: NotebookPanelController?
     private var config: NotebookConfig?
-    private lazy var settingsWindow = ModuleSettingsWindowController(
-        info: info,
-        contentSize: NSSize(width: 580, height: 660),
-        minimumSize: NSSize(width: 520, height: 440)
-    ) { [weak self] in
-        self?.makeSettingsPane() ?? AnyView(EmptyView())
-    }
 
     // Ctrl+Opt+N: mnemonic for "note", off the Cmd namespace apps use.
     private static let defaultHotkey = HotkeyPreset.custom(
@@ -83,8 +76,10 @@ final class NotebookModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
+    var settingsPopupSize: NSSize { NSSize(width: 580, height: 660) }
+
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreImage
 import EventKit
 import IOKit.ps
 import SwiftUI
@@ -9,6 +10,18 @@ enum BoringNotchMediaSource: String, CaseIterable, Identifiable {
     case automatic = "Automatic"
     case appleMusic = "Apple Music"
     case spotify = "Spotify"
+    var id: String { rawValue }
+}
+
+/// What the virtual (non-notch) collapsed bar shows at rest. Physical notches keep their
+/// own accent-dot/clear behavior below the camera cutout; this only governs displays with
+/// no real cutout to fall back on, where a dead placeholder is the difference between the
+/// notch reading as useful vs. reading as a blank bar most of the day.
+enum BoringNotchCollapsedContent: String, CaseIterable, Identifiable {
+    case nowPlaying = "Now Playing"
+    case clock = "Clock"
+    case accent = "Accent Dot"
+    case minimal = "Minimal"
     var id: String { rawValue }
 }
 
@@ -32,6 +45,8 @@ final class BoringNotchPreferences: ObservableObject {
         static let hoverTolerance = "notch.hoverTolerance"
         static let showClock = "notch.showClock"
         static let showBattery = "notch.showBattery"
+        static let collapsedContent = "notch.collapsedContent"
+        static let mediaWingLeading = "notch.mediaWingLeading"
     }
     private let defaults: UserDefaults
     @Published var collapsedWidth: Double { didSet { defaults.set(collapsedWidth, forKey: Key.collapsedWidth) } }
@@ -52,6 +67,10 @@ final class BoringNotchPreferences: ObservableObject {
     @Published var hoverTolerance: Double { didSet { defaults.set(hoverTolerance, forKey: Key.hoverTolerance) } }
     @Published var showClock: Bool { didSet { defaults.set(showClock, forKey: Key.showClock) } }
     @Published var showBattery: Bool { didSet { defaults.set(showBattery, forKey: Key.showBattery) } }
+    @Published var collapsedContent: BoringNotchCollapsedContent {
+        didSet { defaults.set(collapsedContent.rawValue, forKey: Key.collapsedContent) }
+    }
+    @Published var mediaWingLeading: Bool { didSet { defaults.set(mediaWingLeading, forKey: Key.mediaWingLeading) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -72,6 +91,9 @@ final class BoringNotchPreferences: ObservableObject {
         hoverTolerance = defaults.object(forKey: Key.hoverTolerance) as? Double ?? 0
         showClock = defaults.object(forKey: Key.showClock) as? Bool ?? true
         showBattery = defaults.object(forKey: Key.showBattery) as? Bool ?? true
+        collapsedContent = BoringNotchCollapsedContent(
+            rawValue: defaults.string(forKey: Key.collapsedContent) ?? "") ?? .nowPlaying
+        mediaWingLeading = defaults.object(forKey: Key.mediaWingLeading) as? Bool ?? true
     }
 }
 
@@ -107,7 +129,10 @@ final class BoringBatteryModel: ObservableObject {
 }
 
 struct BoringNowPlaying: Equatable {
-    let source: BoringNotchMediaSource
+    /// nil = detected system-wide (any app) rather than via app-specific AppleScript;
+    /// transport control falls back to simulated media keys for those.
+    let source: BoringNotchMediaSource?
+    let appName: String
     let title: String
     let artist: String
     let playing: Bool
@@ -115,13 +140,15 @@ struct BoringNowPlaying: Equatable {
     let position: Double
     let artworkURL: URL?
 
-    var identity: String { "\(source.rawValue)|\(title)|\(artist)" }
+    var identity: String { "\(appName)|\(title)|\(artist)" }
 }
 
 final class BoringNowPlayingModel: ObservableObject {
     static let shared = BoringNowPlayingModel()
     @Published private(set) var item: BoringNowPlaying?
     @Published private(set) var artwork: NSImage?
+    /// Dominant color sampled from `artwork`, for the expanded wing's background wash.
+    @Published private(set) var artworkTint: NSColor?
     private let queue = DispatchQueue(label: "FreeKit.BoringNotch.NowPlaying")
     private var timer: Timer?
     private var refreshing = false
@@ -132,9 +159,9 @@ final class BoringNowPlayingModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
     }
     func stop() { timer?.invalidate(); timer = nil }
-    func togglePlayback() { runCommand("playpause") }
-    func previous() { runCommand("previous track") }
-    func next() { runCommand("next track") }
+    func togglePlayback() { sendTransport("playpause", key: .playPause) }
+    func previous() { sendTransport("previous track", key: .previous) }
+    func next() { sendTransport("next track", key: .next) }
 
     func refresh() {
         guard !refreshing else { return }
@@ -151,11 +178,19 @@ final class BoringNowPlayingModel: ObservableObject {
         }
     }
 
-    private func runCommand(_ command: String) {
-        guard let source = item?.source else { return }
+    /// Spotify/Music get precise AppleScript control (already scriptable); anything found
+    /// only through the system-wide reader gets a simulated hardware media key instead,
+    /// since we don't have an app-specific target to script.
+    private func sendTransport(_ appleScriptCommand: String, key: MediaKey) {
+        guard let item else { return }
+        guard let source = item.source else {
+            key.post()
+            queue.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refresh() }
+            return
+        }
         let appName = source == .spotify ? "Spotify" : "Music"
         queue.async { [weak self] in
-            _ = Self.runAppleScript("tell application \"\(appName)\" to \(command)")
+            _ = Self.runAppleScript("tell application \"\(appName)\" to \(appleScriptCommand)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.refresh() }
         }
     }
@@ -175,7 +210,14 @@ final class BoringNowPlayingModel: ObservableObject {
             if item.playing { return item }
             fallback = fallback ?? item
         }
-        return fallback
+        if let fallback { return fallback }
+        // Neither Spotify nor Music is even running: fall back to system-wide detection
+        // (Safari, Podcasts, VLC, anything else) only in Automatic mode — an explicit
+        // Spotify/Apple Music choice means the user wants exactly that app or nothing.
+        guard preference == .automatic, let system = SystemNowPlaying.fetch() else { return nil }
+        return BoringNowPlaying(source: nil, appName: system.appName, title: system.title,
+                                artist: system.artist, playing: system.playing,
+                                duration: system.duration, position: system.elapsed, artworkURL: nil)
     }
 
     private static func read(source: BoringNotchMediaSource) -> BoringNowPlaying? {
@@ -197,7 +239,7 @@ final class BoringNowPlayingModel: ObservableObject {
         let parts = value.components(separatedBy: "|||")
         guard parts.count == 6 else { return nil }
         let duration = (Double(parts[3]) ?? 0) / (source == .spotify ? 1000 : 1)
-        return BoringNowPlaying(source: source, title: parts[0], artist: parts[1],
+        return BoringNowPlaying(source: source, appName: appName, title: parts[0], artist: parts[1],
                                 playing: parts[2].localizedCaseInsensitiveContains("playing"),
                                 duration: duration, position: Double(parts[4]) ?? 0,
                                 artworkURL: URL(string: parts[5]))
@@ -205,11 +247,20 @@ final class BoringNowPlayingModel: ObservableObject {
 
     private func loadArtwork(for item: BoringNowPlaying?) {
         artwork = nil
+        artworkTint = nil
         guard let item else { return }
         queue.async { [weak self] in
             let image: NSImage?
+            var isRealArtwork = true
             if let url = item.artworkURL, let data = try? Data(contentsOf: url) {
                 image = NSImage(data: data)
+            } else if item.source == nil {
+                // System-wide detection has no reliable artwork source; the app's own
+                // icon reads better than a blank placeholder, but it isn't album art,
+                // so it shouldn't drive the background tint below.
+                image = NSWorkspace.shared.runningApplications
+                    .first { $0.localizedName == item.appName }?.icon
+                isRealArtwork = false
             } else if item.source == .appleMusic {
                 var error: NSDictionary?
                 let descriptor = NSAppleScript(
@@ -223,11 +274,31 @@ final class BoringNowPlayingModel: ObservableObject {
             } else {
                 image = nil
             }
+            let tint = isRealArtwork ? image.flatMap(Self.averageColor) : nil
             DispatchQueue.main.async {
                 guard self?.item?.identity == item.identity else { return }
                 self?.artwork = image
+                self?.artworkTint = tint
             }
         }
+    }
+
+    /// Cheap dominant-color sample (CIAreaAverage over the whole image) for the expanded
+    /// wing's background wash — a hint of the album art's color, not a real palette.
+    private static func averageColor(of image: NSImage) -> NSColor? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let ciImage = CIImage(cgImage: cgImage)
+        guard let filter = CIFilter(name: "CIAreaAverage") else { return nil }
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(cgRect: ciImage.extent), forKey: kCIInputExtentKey)
+        guard let output = filter.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = CIContext(options: [.workingColorSpace: NSNull()])
+        context.render(output, toBitmap: &pixel, rowBytes: 4,
+                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        return NSColor(srgbRed: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255,
+                       blue: CGFloat(pixel[2]) / 255, alpha: 1)
     }
 
     private static func runAppleScript(_ source: String) -> String? {
@@ -293,16 +364,13 @@ final class BoringCalendarModel: ObservableObject {
 final class BoringNotchModule: AppModule {
     let info = ModuleCatalog.boringNotch
     private lazy var controller = BoringNotchPanelController(preferences: .shared)
-    private lazy var settingsWindow = ModuleSettingsWindowController(
-        info: info, contentSize: NSSize(width: 600, height: 680),
-        minimumSize: NSSize(width: 540, height: 440)) { AnyView(BoringNotchSettingsPane()) }
     init(registry: ModuleRegistry) {}
     func activate() { controller.show() }
     func deactivate() { controller.hide() }
     func setMenuBarItemVisible(_ visible: Bool) {}
-    var settingsStyle: ModuleSettingsStyle { .window }
+    var settingsPopupSize: NSSize { NSSize(width: 600, height: 680) }
     func makeSettingsPane() -> AnyView { AnyView(BoringNotchSettingsPane()) }
-    func openSettings() { settingsWindow.show() }
+    func openSettings() { ControlCenterPresenter.shared.present(moduleID: info.id) }
 }
 
 final class BoringNotchPanelState: ObservableObject {
@@ -522,11 +590,18 @@ struct BoringNotchPanelView: View {
     let onPin: () -> Void
     let onHover: (Bool) -> Void
     private var shape: NotchShape {
-        NotchShape(
-            topCornerRadius: state.expanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius,
-            bottomCornerRadius: state.expanded
-                ? CGFloat(max(12, min(34, preferences.cornerRadius)))
-                : NotchMetrics.closedBottomRadius)
+        if state.expanded {
+            return NotchShape(topCornerRadius: NotchMetrics.openTopRadius,
+                              bottomCornerRadius: CGFloat(max(12, min(34, preferences.cornerRadius))))
+        }
+        if state.hasPhysicalNotch {
+            return NotchShape(topCornerRadius: NotchMetrics.closedTopRadius,
+                              bottomCornerRadius: NotchMetrics.closedBottomRadius)
+        }
+        // No real cutout to hug on this display: a pill (half the bar's own height) reads as
+        // an intentional floating bar instead of a shape flared for a notch that isn't there.
+        let pill = state.closedSize.height / 2
+        return NotchShape(topCornerRadius: pill, bottomCornerRadius: pill)
     }
     // Expand/collapse consumes the shared critically damped grammar so the notch reads physical, never bouncy.
     private var expandAnimation: Animation? { DS.animExpand() }
@@ -544,7 +619,22 @@ struct BoringNotchPanelView: View {
             // Content swap crossfades on the shorter grammar timing, independent of the shape's spring.
             .animation(DS.animCrossfade, value: state.expanded)
             .frame(width: state.currentSize.width, height: state.currentSize.height)
-            .background(Color.black, in: shape)
+            .background(Color.dsInk0, in: shape)
+            // Always fades to black at the very top, so the panel blends into the
+            // physical camera cutout above it no matter what's rendered below.
+            .overlay(alignment: .top) {
+                LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: min(48, state.currentSize.height * 0.4))
+                    .allowsHitTesting(false)
+            }
+            // A physical notch must stay seamless bezel-black with no rim; the virtual bar on
+            // notch-less displays has no cutout to blend into, so a hairline gives it definition
+            // instead of reading as an unstyled black rectangle.
+            .overlay {
+                if !state.hasPhysicalNotch {
+                    shape.stroke(Color.white.opacity(0.10), lineWidth: 1)
+                }
+            }
             .clipShape(shape)
             // Hover target grows beyond the visible shape only if the user asks for it; at the
             // default of 0 the pointer must be on the cutout itself, not merely near it.
@@ -569,15 +659,49 @@ struct BoringNotchPanelView: View {
                 } else {
                     Color.clear
                 }
+            } else if state.peeking {
+                sneakPeek
             } else {
+                virtualCollapsedContent
+            }
+        }.contentShape(Rectangle()).onTapGesture(perform: onToggle)
+    }
+    /// The non-notch bar's at-rest content. "Now Playing" degrades to the clock when nothing
+    /// is playing rather than a dead placeholder — that dead state was the single biggest
+    /// reason this read as useless on displays with no physical cutout.
+    @ViewBuilder
+    private var virtualCollapsedContent: some View {
+        switch preferences.collapsedContent {
+        case .nowPlaying:
+            if let item = media.item {
                 HStack(spacing: 8) {
-                    Image(systemName: media.item?.playing == true ? "waveform" : "play.fill").foregroundStyle(Color.dsAccent)
-                    Text(media.item?.title ?? "No audio playing").font(.system(size: 10, weight: .semibold))
+                    Image(systemName: item.playing ? "waveform" : "pause.fill").foregroundStyle(Color.dsAccent)
+                    Text(item.title).font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.75)).lineLimit(1)
                     Spacer()
                 }.padding(.horizontal, 12)
+            } else {
+                clockRow
             }
-        }.contentShape(Rectangle()).onTapGesture(perform: onToggle)
+        case .clock:
+            clockRow
+        case .accent:
+            HStack { Spacer(); Capsule().fill(Color.dsAccent.opacity(0.8))
+                .frame(width: 28, height: 2); Spacer() }
+        case .minimal:
+            Color.clear
+        }
+    }
+    private var clockRow: some View {
+        TimelineView(.everyMinute) { context in
+            HStack {
+                Spacer()
+                Text(context.date, format: .dateTime.hour().minute())
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                Spacer()
+            }
+        }
     }
     private var sneakPeek: some View {
         HStack(spacing: 0) {
@@ -646,15 +770,18 @@ struct BoringNotchPanelView: View {
             headerStrip
                 .padding(.horizontal, NotchMetrics.openTopRadius + 16)
             HStack(alignment: .top, spacing: 18) {
-                if preferences.showMedia {
-                    mediaWing.frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if preferences.showCalendar {
-                    if preferences.showMedia {
-                        Rectangle().fill(Color.white.opacity(0.06))
-                            .frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2)
-                    }
-                    calendarWing.frame(maxWidth: .infinity, alignment: .trailing)
+                // Each wing's content hugs whichever edge faces away from the divider, so
+                // swapping which side a wing sits on must also swap its own alignment —
+                // otherwise both wings cluster against the center divider instead of the
+                // shape's outer margins.
+                if preferences.mediaWingLeading {
+                    if preferences.showMedia { wing(mediaWing, leading: true) }
+                    if preferences.showMedia, preferences.showCalendar { wingDivider }
+                    if preferences.showCalendar { wing(calendarWing, leading: false) }
+                } else {
+                    if preferences.showCalendar { wing(calendarWing, leading: true) }
+                    if preferences.showMedia, preferences.showCalendar { wingDivider }
+                    if preferences.showMedia { wing(mediaWing, leading: false) }
                 }
             }
             // Clear the shape's straight edges (openTopRadius inboard) plus a wider side margin so
@@ -665,6 +792,7 @@ struct BoringNotchPanelView: View {
             .padding(.top, 6)
             Spacer(minLength: 0)
         }
+        .background(artworkTintWash)
         .overlay(alignment: .bottom) {
             Button(action: onPin) { Image(systemName: state.pinned ? "pin.fill" : "pin")
                 .font(.system(size: 9, weight: .semibold))
@@ -673,6 +801,26 @@ struct BoringNotchPanelView: View {
                 .buttonStyle(.plain).help(state.pinned ? "Unpin Notch" : "Keep Notch Open")
         }
     }
+    private func wing<V: View>(_ content: V, leading: Bool) -> some View {
+        content.frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
+    }
+    private var wingDivider: some View {
+        Rectangle().fill(Color.white.opacity(0.06))
+            .frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2)
+    }
+    /// A faint wash of the current artwork's dominant color behind the whole expanded card —
+    /// only while media is showing and real album art loaded, so an empty/calendar-only notch
+    /// stays neutral black.
+    private var artworkTintWash: some View {
+        Group {
+            if preferences.showMedia, let tint = media.artworkTint {
+                LinearGradient(colors: [Color(nsColor: tint).opacity(0.30), .clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .transition(.opacity)
+            }
+        }
+        .animation(DS.animCrossfade, value: media.artworkTint)
+    }
     private var mediaWing: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -680,7 +828,7 @@ struct BoringNotchPanelView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(media.item?.title ?? "Nothing Playing").font(.system(size: 15, weight: .bold))
                         .foregroundStyle(Color.white).lineLimit(1)
-                    Text(media.item?.artist ?? "Open Spotify or Music").font(.system(size: 12, weight: .medium))
+                    Text(media.item?.artist ?? "Play something, anywhere").font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.42)).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -727,10 +875,16 @@ struct BoringNotchPanelView: View {
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: min(8, size / 5), style: .continuous))
         } else {
-            Image(systemName: media.item?.source == .spotify
-                  ? "dot.radiowaves.left.and.right" : "music.note")
-                .font(.system(size: size * 0.34, weight: .semibold))
-                .foregroundStyle(Color.dsAccent)
+            Group {
+                if media.item?.playing == true {
+                    MiniEqualizer(active: true)
+                } else {
+                    Image(systemName: media.item?.source == .spotify
+                          ? "dot.radiowaves.left.and.right" : "music.note")
+                        .font(.system(size: size * 0.34, weight: .semibold))
+                        .foregroundStyle(Color.dsAccent)
+                }
+            }
                 .frame(width: size, height: size)
                 .background(Color.white.opacity(0.07),
                             in: RoundedRectangle(cornerRadius: min(8, size / 5), style: .continuous))
@@ -787,6 +941,27 @@ struct BoringNotchPanelView: View {
     }
 }
 
+/// Small pulsing bar trio standing in for a live audio visualizer, shown in place of the
+/// static note glyph when something is actually playing and no real artwork loaded.
+private struct MiniEqualizer: View {
+    let active: Bool
+    @State private var tall = false
+    private static let heights: [(low: CGFloat, high: CGFloat)] = [(5, 13), (4, 9), (6, 12)]
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2.5) {
+            ForEach(0..<3, id: \.self) { i in
+                Capsule().fill(Color.dsAccent)
+                    .frame(width: 3, height: tall ? Self.heights[i].high : Self.heights[i].low)
+            }
+        }
+        .frame(width: 17, height: 14, alignment: .bottom)
+        .animation(DS.animPulse(), value: tall)
+        .onAppear { tall = active }
+        .onChange(of: active) { _, now in tall = now }
+    }
+}
+
 struct BoringNotchSettingsPane: View {
     @ObservedObject private var preferences = BoringNotchPreferences.shared
     @ObservedObject private var calendar = BoringCalendarModel.shared
@@ -805,6 +980,10 @@ struct BoringNotchSettingsPane: View {
                         preferences.mediaSource = source; BoringNowPlayingModel.shared.refresh()
                     }
                 }}
+                Text(preferences.mediaSource == .automatic
+                     ? "Automatic prefers Spotify or Apple Music when either is open, then falls back to whatever else is playing system-wide (Safari, Podcasts, VLC, anything)."
+                     : "Locked to \(preferences.mediaSource.rawValue) \u{2014} other apps' audio won't show here even if it's what's actually playing.")
+                    .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
                 DSToggleRow(title: "Peek when the track changes", isOn: $preferences.showTrackPeek)
                 slider("Peek duration", value: $preferences.trackPeekDuration, range: 1.5...8, suffix: "s")
             }
@@ -831,6 +1010,9 @@ struct BoringNotchSettingsPane: View {
                 slider("Expanded width", value: $preferences.expandedWidth, range: 380...760)
                 slider("Content height", value: $preferences.expandedHeight, range: 112...200)
                 slider("Corner radius", value: $preferences.cornerRadius, range: 12...34)
+                if preferences.showMedia && preferences.showCalendar {
+                    DSToggleRow(title: "Media on the left", isOn: $preferences.mediaWingLeading)
+                }
             }
             DSSettingsCard(title: "Menu bar strip") {
                 DSToggleRow(title: "Show clock", isOn: $preferences.showClock)
@@ -847,7 +1029,21 @@ struct BoringNotchSettingsPane: View {
                 }
                 DSToggleRow(title: "Collapse after leaving", isOn: $preferences.autoCollapse)
                 slider("Collapse delay", value: $preferences.collapseDelay, range: 0.2...5, suffix: "s")
-                DSToggleRow(title: "Show accent indicator", isOn: $preferences.showAccent)
+                if hasPhysicalNotch {
+                    DSToggleRow(title: "Show accent indicator", caption: "A small dot below the camera cutout at rest.",
+                               isOn: $preferences.showAccent)
+                }
+            }
+            if !hasPhysicalNotch {
+                DSSettingsCard(title: "At rest") {
+                    Text("What the bar shows when it's collapsed and nothing else is happening.")
+                        .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
+                    HStack(spacing: 8) { ForEach(BoringNotchCollapsedContent.allCases) { style in
+                        DSChip(title: style.rawValue, selected: preferences.collapsedContent == style) {
+                            preferences.collapsedContent = style
+                        }
+                    }}
+                }
             }
         }
     }

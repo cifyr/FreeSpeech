@@ -6,10 +6,11 @@ import FreeSpeechCore
 // the bare name to ours once for the whole target.
 typealias Settings = FreeSpeechCore.Settings
 
-// Where a module's settings live: rich tools get their own window, tools with
-// one or two simple controls stay inline in the control-center card.
+// Where a module's settings live: rich tools get a modal popup inside the
+// Control Center window (see ControlCenterWindow.swift), tools with one or
+// two simple controls stay inline in the control-center card.
 enum ModuleSettingsStyle {
-    case window
+    case popup
     case inline
     case none
 }
@@ -23,15 +24,26 @@ protocol AppModule: AnyObject {
     // Only called on ownsMenuBarItem modules, and only while active.
     func setMenuBarItemVisible(_ visible: Bool)
     var settingsStyle: ModuleSettingsStyle { get }
-    // Settings content: hosted in the module's own window (.window) or inside
-    // the control-center card (.inline).
+    // The Control Center window grows to at least this size (never shrinks
+    // below whatever it already was) while this module's popup is open.
+    var settingsPopupSize: NSSize { get }
+    // True only for panes that already render their own title/scroll chrome
+    // (Speech's tabbed view predates the suite) — the popup then hosts the
+    // pane edge to edge instead of wrapping it in the generic header.
+    var popupUsesOwnChrome: Bool { get }
+    // Settings content: hosted in the popup (.popup) or inside the
+    // control-center card (.inline).
     func makeSettingsPane() -> AnyView
     func openSettings()
 }
 
 extension AppModule {
-    var settingsStyle: ModuleSettingsStyle { .window }
-    func openSettings() {}
+    var settingsStyle: ModuleSettingsStyle { .popup }
+    var settingsPopupSize: NSSize { NSSize(width: 560, height: 620) }
+    var popupUsesOwnChrome: Bool { false }
+    // Default routes through the shared popup; only Control Center's own UI
+    // needs no override since it drives the popup directly.
+    func openSettings() { ControlCenterPresenter.shared.present(moduleID: info.id) }
 }
 
 // Coming-soon tools: real catalog entry, greyed-out card, zero runtime behavior.

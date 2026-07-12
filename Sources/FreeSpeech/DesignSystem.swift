@@ -374,6 +374,28 @@ enum DSMotionAppKit {
         guard !reduceMotion, window.isVisible else { finish(); return }
         run(duration: DS.hudCrossfade, { _ in window.animator().alphaValue = 0 }, completion: finish)
     }
+
+    // Grows/shrinks a window in place around its current center, clamped to
+    // its screen — used when an in-window modal popup asks its host for more room.
+    static func resizeWindow(_ window: NSWindow, toContentSize size: NSSize) {
+        let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        resizeWindow(window, toFrame: centeredFrame(size: frame.size, around: window.frame, on: window.screen))
+    }
+
+    static func resizeWindow(_ window: NSWindow, toFrame frame: NSRect) {
+        guard !reduceMotion else { window.setFrame(frame, display: true); return }
+        run(duration: DS.durBase) { _ in window.animator().setFrame(frame, display: true) }
+    }
+
+    private static func centeredFrame(size: NSSize, around previous: NSRect, on screen: NSScreen?) -> NSRect {
+        var frame = NSRect(origin: .zero, size: size)
+        frame.origin = NSPoint(x: previous.midX - size.width / 2, y: previous.midY - size.height / 2)
+        if let visible = screen?.visibleFrame {
+            frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - size.width))
+            frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
+        }
+        return frame
+    }
 }
 
 extension Color {

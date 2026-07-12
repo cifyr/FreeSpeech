@@ -40,7 +40,7 @@ final class SpeechModule: NSObject, AppModule {
     private var pendingTargetBundleID: String?
     private var hud: HUDController!
     private var statusBar: StatusBarController!
-    private var settingsWindow: SettingsWindowController!
+    private var settingsStore: SettingsStore?
     private var onboardingWindow: OnboardingWindowController!
     // Set while the onboarding practice step is active: transcripts route here instead
     // of being inserted, so the user learns the hotkey without pasting into a real field.
@@ -99,14 +99,30 @@ final class SpeechModule: NSObject, AppModule {
         statusBar?.setVisible(visible)
     }
 
-    // Speech predates the suite and keeps its original tabbed settings window.
+    var settingsPopupSize: NSSize { NSSize(width: 560, height: 680) }
+    // Speech predates the suite and keeps its original tabbed settings view,
+    // hosted edge to edge in the popup instead of the shared header/scroll.
+    var popupUsesOwnChrome: Bool { true }
+
     func openSettings() {
         guard activated else { return }
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {
-        AnyView(EmptyView())
+        let store = settingsStore ?? makeSettingsStore()
+        settingsStore = store
+        return AnyView(SettingsView(store: store, updates: store.updates))
+    }
+
+    private func makeSettingsStore() -> SettingsStore {
+        SettingsStore(
+            settings: settings,
+            languageModelAvailable: postProcessor.languageModelAvailable,
+            learningStore: learningStore,
+            updates: updateManager,
+            onHotkeyChanged: { [weak self] in self?.installHotkey() },
+            onModelChanged: { [weak self] in self?.applySettings() })
     }
 
     // MARK: - Runtime construction (once, on first activate)
@@ -122,17 +138,7 @@ final class SpeechModule: NSObject, AppModule {
         statusBar = StatusBarController(
             settings: settings, languageModelAvailable: postProcessor.languageModelAvailable)
         statusBar.onSettingsChanged = { [weak self] in self?.applySettings() }
-        settingsWindow = SettingsWindowController { [weak self] in
-            guard let self else { fatalError("settings store requested after teardown") }
-            return SettingsStore(
-                settings: self.settings,
-                languageModelAvailable: self.postProcessor.languageModelAvailable,
-                learningStore: self.learningStore,
-                updates: self.updateManager,
-                onHotkeyChanged: { self.installHotkey() },
-                onModelChanged: { self.applySettings() })
-        }
-        statusBar.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        statusBar.onOpenSettings = { [weak self] in self?.openSettings() }
         onboardingWindow = OnboardingWindowController { [weak self] close in
             guard let self else { fatalError("onboarding store requested after teardown") }
             let store = OnboardingStore(settings: self.settings, deps: OnboardingDeps(

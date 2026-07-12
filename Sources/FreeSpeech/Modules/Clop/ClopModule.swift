@@ -36,13 +36,6 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private var batchProgress: (done: Int, total: Int)?
     private let paneModel = ClopPaneModel()
     private let dropZone = ClopDropZoneController()
-    private lazy var settingsWindow = ModuleSettingsWindowController(
-        info: info,
-        contentSize: NSSize(width: 640, height: 760),
-        minimumSize: NSSize(width: 560, height: 480)
-    ) { [weak self] in
-        self?.makeSettingsPane() ?? AnyView(EmptyView())
-    }
 
     enum Key {
         static let images = "images"
@@ -173,8 +166,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
+    var settingsPopupSize: NSSize { NSSize(width: 640, height: 760) }
+
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {

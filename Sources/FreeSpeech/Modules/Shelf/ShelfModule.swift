@@ -14,22 +14,18 @@ final class ShelfModule: NSObject, AppModule {
     private var detector: ShakeDetector
     private var dragSessionActive = false
     private var lastDragChangeCount = 0
-    private let panelController = ShelfPanelController()
+    private let panelController: ShelfPanelController
     private let paneModel = ShelfPaneModel()
-    private lazy var settingsWindow = ModuleSettingsWindowController(
-        info: info,
-        contentSize: NSSize(width: 560, height: 480)
-    ) { [weak self] in
-        self?.makeSettingsPane() ?? AnyView(EmptyView())
-    }
 
     enum Key {
         static let sensitivity = "sensitivity"
         static let keepOnClose = "keepOnClose"
+        static let iconView = "iconView"
     }
 
     init(settings: Settings) {
         self.settings = settings
+        panelController = ShelfPanelController(settings: settings, moduleID: ModuleCatalog.shelf.id)
         detector = ShakeDetector(config: ShelfPlan.config(forSensitivity: ShelfPlan.defaultSensitivity))
         super.init()
     }
@@ -74,8 +70,10 @@ final class ShelfModule: NSObject, AppModule {
 
     func setMenuBarItemVisible(_ visible: Bool) {}
 
+    var settingsPopupSize: NSSize { NSSize(width: 560, height: 480) }
+
     func openSettings() {
-        settingsWindow.show()
+        ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {
