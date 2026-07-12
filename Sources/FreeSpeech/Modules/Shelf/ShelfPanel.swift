@@ -149,8 +149,10 @@ private struct ShelfPanelView: View {
             } else {
                 ScrollView {
                     VStack(spacing: 4) {
-                        ForEach(store.items) { item in
+                        ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
                             ShelfRow(item: item) { store.remove(item) }
+                                .transition(.dsAppear)
+                                .animation(DS.animAppear(index: index), value: store.items.count)
                         }
                     }
                 }
@@ -164,7 +166,7 @@ private struct ShelfPanelView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(targeted ? Color.dsAccent : Color.dsLine, lineWidth: 1.5))
-        .animation(.easeOut(duration: 0.12), value: targeted)
+        .animation(DS.animInstant, value: targeted)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             loadURLs(from: providers) { urls in store.add(urls) }
             return !providers.isEmpty
@@ -251,7 +253,8 @@ private struct ShelfRow: View {
                         .frame(width: 20, height: 20)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.dsPress)
+                .transition(.opacity)
             }
         }
         .padding(.horizontal, 8)
@@ -263,6 +266,7 @@ private struct ShelfRow: View {
             RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous)
                 .strokeBorder(Color.dsLine, lineWidth: 1))
         .onHover { hovering = $0 }
+        .animation(DS.animInstant, value: hovering)
         // Standard file-URL drag: the destination sees the same URL a Finder
         // drag would deliver, so drops into folders, Slack, or mail all work.
         .onDrag { NSItemProvider(object: item.url as NSURL) }
