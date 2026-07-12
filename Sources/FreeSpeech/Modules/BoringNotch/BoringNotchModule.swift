@@ -644,24 +644,26 @@ struct BoringNotchPanelView: View {
         VStack(spacing: 0) {
             // The physical cutout owns this strip; the clock and battery fill the space beside it.
             headerStrip
-                .padding(.horizontal, NotchMetrics.openTopRadius + 11)
-            HStack(alignment: .center, spacing: 18) {
+                .padding(.horizontal, NotchMetrics.openTopRadius + 16)
+            HStack(alignment: .top, spacing: 18) {
                 if preferences.showMedia {
                     mediaWing.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if preferences.showCalendar {
                     if preferences.showMedia {
                         Rectangle().fill(Color.white.opacity(0.06))
-                            .frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 4)
+                            .frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2)
                     }
                     calendarWing.frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            .frame(maxHeight: .infinity)
-            // The shape's straight edges sit `openTopRadius` inboard of the frame — clear them.
-            .padding(.horizontal, NotchMetrics.openTopRadius + 11)
-            .padding(.top, 12)
-            .padding(.bottom, 14)
+            // Clear the shape's straight edges (openTopRadius inboard) plus a wider side margin so
+            // the wings aren't cramped against the flared shoulders.
+            .padding(.horizontal, NotchMetrics.openTopRadius + 16)
+            // Sit the wings just under the clock/battery strip rather than centering them; the
+            // trailing spacer drops the leftover height to the bottom, where the pin lives.
+            .padding(.top, 6)
+            Spacer(minLength: 0)
         }
         .overlay(alignment: .bottom) {
             Button(action: onPin) { Image(systemName: state.pinned ? "pin.fill" : "pin")
