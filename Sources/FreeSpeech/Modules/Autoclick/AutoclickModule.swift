@@ -360,7 +360,10 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
             statusItem = item
         }
         statusItem?.isVisible = shouldShow
-        guard shouldShow, let button = statusItem?.button else { return }
+        guard shouldShow, let button = statusItem?.button else {
+            statusItem?.button.map { setStatusPulse(active: false, on: $0) }
+            return
+        }
         button.image = NSImage(
             systemSymbolName: isRunning ? "cursorarrow.click.badge.clock" : "cursorarrow.click.2",
             accessibilityDescription: pendingStart ? "Tap waiting to start" : (isRunning ? "Tap running" : "Tap idle"))
@@ -378,6 +381,29 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
         button.toolTip = pendingStart
             ? "Tap: waiting to start"
             : (isRunning ? "Tap: running (hotkey stops)" : "Tap autoclicker")
+        setStatusPulse(active: isRunning, on: button)
+    }
+
+    // Menu-bar live pulse: a slow, quiet opacity breath on the status button's
+    // layer while a run is live. Removed the moment clicking stops or the item
+    // hides so it never animates offscreen or pegs a core, and not restarted on
+    // the counter-style refreshes. Steady under Reduce Motion.
+    private func setStatusPulse(active: Bool, on button: NSStatusBarButton) {
+        let key = "dsLivePulse"
+        guard active, !DS.reduceMotion else {
+            button.layer?.removeAnimation(forKey: key)
+            return
+        }
+        button.wantsLayer = true
+        guard button.layer?.animation(forKey: key) == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.55
+        pulse.duration = 0.9
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        button.layer?.add(pulse, forKey: key)
     }
 
     // MARK: - Menu
