@@ -321,6 +321,7 @@ private struct AppearancePane: View {
 // Suite-level preferences that belong to no single tool.
 private struct SuitePrefsFooter: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @StateObject private var updater = SuiteUpdater()
 
     var body: some View {
         HStack(spacing: 10) {
@@ -335,8 +336,30 @@ private struct SuitePrefsFooter: View {
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .kerning(1.0)
                 .foregroundStyle(Color.dsFaint)
+            updateButton
         }
         .padding(.top, 4)
+    }
+
+    // Dev convenience: rebuild the working copy and relaunch, so a code change
+    // takes effect without leaving the app for a terminal.
+    private var updateButton: some View {
+        Button(action: updater.update) {
+            HStack(spacing: 6) {
+                if updater.state == .updating {
+                    ProgressView().controlSize(.small).tint(Color.dsAccent)
+                } else {
+                    Image(systemName: updater.state == .failed
+                          ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(updater.state == .updating ? "Updating\u{2026}"
+                     : (updater.state == .failed ? "Retry Update" : "Update"))
+            }
+        }
+        .buttonStyle(GhostButtonStyle())
+        .disabled(updater.state == .updating)
+        .help("Rebuild FreeKit from source and relaunch")
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -354,6 +377,56 @@ private struct SuitePrefsFooter: View {
             Log.error("launch at login change failed: \(error.localizedDescription)")
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
+    }
+}
+
+// Rebuilds the working copy via build.sh and relaunches the freshly installed
+// bundle. A personal-tool affordance, so the repo path is fixed to this
+// machine's checkout; if it is missing the button simply reports failure.
+private final class SuiteUpdater: ObservableObject {
+    enum State { case idle, updating, failed }
+    @Published var state: State = .idle
+
+    private let repo = "/Users/caden/ClaudeCode/idk/FreeSpeech"
+    private let installed = "/Applications/FreeKit.app"
+
+    func update() {
+        guard state != .updating else { return }
+        guard FileManager.default.fileExists(atPath: repo + "/build.sh") else {
+            Log.error("update: build.sh not found at \(repo)")
+            state = .failed
+            return
+        }
+        state = .updating
+        Log.info("update: rebuilding from \(repo)")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/bash")
+            // Login shell so the Swift/cmake toolchain resolves on PATH the same
+            // way a terminal build does.
+            task.arguments = ["-lc", "cd \(self.repo) && ./build.sh --skip-model"]
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                Log.error("update: could not launch build: \(error.localizedDescription)")
+                DispatchQueue.main.async { self.state = .failed }
+                return
+            }
+            let ok = task.terminationStatus == 0
+            Log.info("update: build exited \(task.terminationStatus)")
+            DispatchQueue.main.async { ok ? self.relaunch() : (self.state = .failed) }
+        }
+    }
+
+    private func relaunch() {
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["-n", installed]
+        try? open.run()
+        // Let the fresh instance come up before this one exits.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
     }
 }
 
