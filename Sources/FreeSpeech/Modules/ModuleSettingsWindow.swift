@@ -40,8 +40,6 @@ final class ModuleSettingsWindowController {
             w.backgroundColor = DS.ink0
             w.minSize = minimumSize
             w.setContentSize(contentSize)
-            // Hidden titlebar leaves nothing to grab; drag anywhere instead.
-            w.isMovableByWindowBackground = true
             w.isReleasedWhenClosed = false
             w.center()
             NotificationCenter.default.addObserver(
@@ -74,16 +72,23 @@ private struct ModuleSettingsContainer: View {
                     .font(.system(size: 28, weight: .heavy))
                     .foregroundStyle(Color.dsPaper)
             }
+            // Hidden titlebar leaves nothing to grab; only the header drags the
+            // window, so sliders/buttons further down keep their own gestures
+            // instead of losing mouseDown to a window-wide move.
+            .background(WindowDragHandle())
             ScrollView {
                 pane
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.bottom, 16)
             }
+            HStack { Spacer(); SuiteUpdateButton() }
         }
         .padding(20)
         .frame(minWidth: 480, maxWidth: .infinity,
                minHeight: 360, maxHeight: .infinity)
         .background(AppearanceBackground())
+        // First time a tool's settings open, show its short how-to.
+        .moduleGuide(for: info)
     }
 }
 
@@ -95,15 +100,8 @@ struct DSSettingsCard<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
     @ObservedObject private var appearance = AppearanceManager.shared
-    @State private var appeared = false
 
-    var body: some View {
-        Group {
-            if appeared { card.transition(.dsAppear) }
-        }
-        // Cards fade + rise in when the settings window opens; instant under Reduce Motion.
-        .onAppear { withAnimation(DS.animAppear()) { appeared = true } }
-    }
+    var body: some View { card }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: appearance.density.contentSpacing) {

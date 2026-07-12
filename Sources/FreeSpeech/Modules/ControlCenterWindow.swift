@@ -321,7 +321,6 @@ private struct AppearancePane: View {
 // Suite-level preferences that belong to no single tool.
 private struct SuitePrefsFooter: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @StateObject private var updater = SuiteUpdater()
 
     var body: some View {
         HStack(spacing: 10) {
@@ -336,30 +335,9 @@ private struct SuitePrefsFooter: View {
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .kerning(1.0)
                 .foregroundStyle(Color.dsFaint)
-            updateButton
+            SuiteUpdateButton()
         }
         .padding(.top, 4)
-    }
-
-    // Dev convenience: rebuild the working copy and relaunch, so a code change
-    // takes effect without leaving the app for a terminal.
-    private var updateButton: some View {
-        Button(action: updater.update) {
-            HStack(spacing: 6) {
-                if updater.state == .updating {
-                    ProgressView().controlSize(.small).tint(Color.dsAccent)
-                } else {
-                    Image(systemName: updater.state == .failed
-                          ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                Text(updater.state == .updating ? "Updating\u{2026}"
-                     : (updater.state == .failed ? "Retry Update" : "Update"))
-            }
-        }
-        .buttonStyle(GhostButtonStyle())
-        .disabled(updater.state == .updating)
-        .help("Rebuild FreeKit from source and relaunch")
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -380,10 +358,35 @@ private struct SuitePrefsFooter: View {
     }
 }
 
+// Reusable Update control: rebuild from source and relaunch. Drop into any
+// window's footer so a code change lands without leaving the app.
+struct SuiteUpdateButton: View {
+    @StateObject private var updater = SuiteUpdater()
+
+    var body: some View {
+        Button(action: updater.update) {
+            HStack(spacing: 6) {
+                if updater.state == .updating {
+                    ProgressView().controlSize(.small).tint(Color.dsAccent)
+                } else {
+                    Image(systemName: updater.state == .failed
+                          ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(updater.state == .updating ? "Updating\u{2026}"
+                     : (updater.state == .failed ? "Retry Update" : "Update"))
+            }
+        }
+        .buttonStyle(GhostButtonStyle())
+        .disabled(updater.state == .updating)
+        .help("Rebuild FreeKit from source and relaunch")
+    }
+}
+
 // Rebuilds the working copy via build.sh and relaunches the freshly installed
 // bundle. A personal-tool affordance, so the repo path is fixed to this
 // machine's checkout; if it is missing the button simply reports failure.
-private final class SuiteUpdater: ObservableObject {
+final class SuiteUpdater: ObservableObject {
     enum State { case idle, updating, failed }
     @Published var state: State = .idle
 
