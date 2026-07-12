@@ -69,8 +69,8 @@ struct GhostButtonStyle: ButtonStyle {
                     RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
                         .strokeBorder(Color.dsLine, lineWidth: 1))
                 .onHover { hovering = $0 }
-                .animation(.easeOut(duration: DS.durInstant), value: configuration.isPressed)
-                .animation(.easeOut(duration: DS.durInstant), value: hovering)
+                .animation(DS.animInstant, value: configuration.isPressed)
+                .animation(DS.animInstant, value: hovering)
         }
     }
 }
@@ -87,7 +87,7 @@ struct PrimaryButtonStyle: ButtonStyle {
             .background(
                 Color.dsPaper.opacity(configuration.isPressed ? 0.82 : 1),
                 in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
-            .animation(.easeOut(duration: DS.durInstant), value: configuration.isPressed)
+            .animation(DS.animInstant, value: configuration.isPressed)
     }
 }
 
@@ -116,7 +116,7 @@ struct DSCheckbox: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: DS.durInstant), value: isOn)
+        .animation(DS.animInstant, value: isOn)
     }
 }
 
@@ -144,8 +144,8 @@ struct DSChip: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: DS.durInstant), value: hovering)
-        .animation(.easeOut(duration: DS.durInstant), value: selected)
+        .animation(DS.animInstant, value: hovering)
+        .animation(DS.animInstant, value: selected)
     }
 }
 
@@ -172,8 +172,167 @@ struct DSTabButton: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: DS.durBase), value: selected)
-        .animation(.easeOut(duration: DS.durInstant), value: hovering)
+        .animation(DS.animBase, value: selected)
+        .animation(DS.animInstant, value: hovering)
+    }
+}
+
+// MARK: - Motion grammar
+//
+// Views say WHAT is happening (appearing, pressed, value changed, going live);
+// this layer owns HOW it moves. One decelerate curve (easeOut) for every
+// directional motion keeps the whole suite calm; the live pulse is the only
+// symmetric ease-in-out. Reduce Motion is gated in exactly one place here, so
+// every surface that consumes the grammar inherits it for free: directional
+// animations collapse to nil (an instant state change), never a cut mid-flight.
+extension DS {
+    // AppKit-facing source of truth. SwiftUI modifiers below additionally read
+    // @Environment(\.accessibilityReduceMotion) so they re-evaluate on a live toggle.
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    // nil under Reduce Motion -> withAnimation/.animation apply the change instantly.
+    static func anim(_ duration: TimeInterval, reduceMotion rm: Bool = reduceMotion) -> Animation? {
+        rm ? nil : .easeOut(duration: duration)
+    }
+    static var animInstant: Animation? { anim(durInstant) }   // press, hover
+    static var animBase: Animation? { anim(durBase) }         // appear, select, value change
+    static var animSlow: Animation? { anim(durSlow) }         // large panels
+    static var animCrossfade: Animation? { anim(hudCrossfade) } // content swaps
+
+    // Per-item appear delay, capped so a long list settles fast instead of
+    // cascading forever.
+    static let staggerStep: TimeInterval = 0.03
+    static let staggerCap = 8
+    static func animAppear(index: Int = 0, reduceMotion rm: Bool = reduceMotion) -> Animation? {
+        rm ? nil : .easeOut(duration: durBase).delay(Double(min(max(index, 0), staggerCap)) * staggerStep)
+    }
+
+    // Expand/collapse of a large surface (the notch): a spring critically damped
+    // (dampingFraction 1) so it reads physical but never overshoots or bounces.
+    static func animExpand(reduceMotion rm: Bool = reduceMotion) -> Animation? {
+        rm ? nil : .spring(response: 0.34, dampingFraction: 1)
+    }
+
+    // The one symmetric exception: a slow breathing pulse for a live/active dot.
+    // Longer than durSlow on purpose (ambient idle), so it reads as breathing,
+    // not a blink. Steady (no animation) under Reduce Motion.
+    static func animPulse(reduceMotion rm: Bool = reduceMotion) -> Animation? {
+        rm ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+    }
+}
+
+extension AnyTransition {
+    // Cards/rows/panels enter with a fade and a few points of upward travel.
+    // Under Reduce Motion the driving animation is nil, so the offset never
+    // plays and the view simply appears.
+    static var dsAppear: AnyTransition { .opacity.combined(with: .offset(y: 5)) }
+    static var dsCrossfade: AnyTransition { .opacity }
+}
+
+// Press feedback shared with the existing button styles' idiom: a small scale
+// dip, never a bounce. Adopt via .buttonStyle(.dsPress).
+struct PressableButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(DS.anim(DS.durInstant, reduceMotion: reduceMotion), value: configuration.isPressed)
+    }
+}
+extension ButtonStyle where Self == PressableButtonStyle {
+    static var dsPress: PressableButtonStyle { PressableButtonStyle() }
+}
+
+struct DSHoverHighlight: ViewModifier {
+    var cornerRadius: CGFloat
+    var fill: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
+    func body(content: Content) -> some View {
+        content
+            .background(hovering ? fill : Color.clear,
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .onHover { hovering = $0 }
+            .animation(DS.anim(DS.durInstant, reduceMotion: reduceMotion), value: hovering)
+    }
+}
+
+struct DSValueTransition<V: Equatable>: ViewModifier {
+    let value: V
+    let numeric: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content
+            .contentTransition(numeric ? .numericText() : .opacity)
+            .animation(DS.anim(numeric ? DS.durBase : DS.hudCrossfade, reduceMotion: reduceMotion), value: value)
+    }
+}
+
+// A live/active indicator that breathes while `active`, steady otherwise. Stops
+// on inactive and on disappear so nothing animates offscreen.
+struct DSLivePulse: ViewModifier {
+    let active: Bool
+    var dimTo: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dim = false
+    func body(content: Content) -> some View {
+        content
+            .opacity(active && dim && !reduceMotion ? dimTo : 1)
+            .onAppear { retune(active) }
+            .onChange(of: active) { _, now in retune(now) }
+            .onDisappear { dim = false }
+    }
+    private func retune(_ on: Bool) {
+        guard on, !reduceMotion else { dim = false; return }  // plain assign cancels the repeatForever
+        withAnimation(DS.animPulse()) { dim = true }
+    }
+}
+
+extension View {
+    func dsHoverHighlight(cornerRadius: CGFloat = DS.radiusControl, fill: Color = .dsInk3) -> some View {
+        modifier(DSHoverHighlight(cornerRadius: cornerRadius, fill: fill))
+    }
+    // Numeric readouts (Stats counters, saved bytes, timers): native count roll.
+    func dsValueTransition<V: Equatable>(_ value: V) -> some View {
+        modifier(DSValueTransition(value: value, numeric: true))
+    }
+    // Arbitrary content swap (status text, hover-revealed rows): opacity crossfade.
+    func dsContentCrossfade<V: Equatable>(_ value: V) -> some View {
+        modifier(DSValueTransition(value: value, numeric: false))
+    }
+    func dsLivePulse(_ active: Bool, dimTo: Double = 0.45) -> some View {
+        modifier(DSLivePulse(active: active, dimTo: dimTo))
+    }
+}
+
+// AppKit mirror of the grammar for NSView/NSPanel surfaces (HUD, module panels
+// and toasts): same durations, same decelerate curve, same Reduce Motion gate,
+// so AppKit and SwiftUI surfaces feel identical.
+enum DSMotionAppKit {
+    static var reduceMotion: Bool { DS.reduceMotion }
+
+    static func run(duration: TimeInterval,
+                    _ changes: @escaping (NSAnimationContext) -> Void,
+                    completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = reduceMotion ? 0 : duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            changes(ctx)
+        }, completionHandler: completion)
+    }
+
+    static func fadeIn(_ panel: NSPanel, duration: TimeInterval = DS.hudCrossfade) {
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        run(duration: duration) { _ in panel.animator().alphaValue = 1 }
+    }
+
+    static func fadeOut(_ panel: NSPanel, duration: TimeInterval = DS.hudCrossfade) {
+        run(duration: duration, { _ in panel.animator().alphaValue = 0 }) { [weak panel] in
+            panel?.orderOut(nil)
+            panel?.alphaValue = 1
+        }
     }
 }
 
