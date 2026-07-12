@@ -117,90 +117,11 @@ struct ControlCenterView: View {
 
 private struct MenuBarPane: View {
     @ObservedObject var registry: ModuleRegistry
-    @ObservedObject private var appearance = AppearanceManager.shared
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: appearance.density.contentSpacing) {
-                DSSettingsCard(title: "FreeKit Menu") {
-                    Text("Choose the suite icon")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.dsPaper)
-                    HStack(spacing: 8) {
-                        ForEach(SuiteMenuIcon.allCases) { option in
-                            Button {
-                                appearance.suiteMenuIcon = option
-                            } label: {
-                                VStack(spacing: 7) {
-                                    Image(systemName: option.symbolName)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(
-                                            appearance.suiteMenuIcon == option
-                                                ? Color.dsAccent : Color.dsPaper)
-                                    Text(option.rawValue)
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(Color.dsMuted)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 54)
-                                .background(Color.dsInk2,
-                                            in: RoundedRectangle(
-                                                cornerRadius: DS.radiusKeycap,
-                                                style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous)
-                                        .strokeBorder(
-                                            appearance.suiteMenuIcon == option
-                                                ? Color.dsAccent.opacity(0.6) : Color.dsLine,
-                                            lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Use the \(option.rawValue.lowercased()) icon")
-                        }
-                    }
-                    DSToggleRow(
-                        title: "Quick tool controls",
-                        caption: "Show an enable or disable submenu in the FreeKit menu.",
-                        isOn: $appearance.suiteMenuQuickTools)
-                }
-
-                DSSettingsCard(title: "Module Icons") {
-                    ForEach(registry.modules.map(\.info).filter {
-                        $0.status == .available && $0.ownsMenuBarItem
-                    }) { info in
-                        HStack(spacing: 12) {
-                            Image(systemName: info.symbolName)
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(
-                                    registry.showsMenuBarItem(id: info.id)
-                                        ? Color.dsAccent : Color.dsMuted)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(info.displayName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(Color.dsPaper)
-                                Text(registry.isEnabled(id: info.id) ? "Tool enabled" : "Tool disabled")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color.dsFaint)
-                            }
-                            Spacer()
-                            DSCheckbox(isOn: Binding(
-                                get: { registry.showsMenuBarItem(id: info.id) },
-                                set: { registry.setShowsMenuBarItem($0, id: info.id) }))
-                                .disabled(!registry.isEnabled(id: info.id))
-                                .opacity(registry.isEnabled(id: info.id) ? 1 : 0.4)
-                        }
-                        .frame(minHeight: 34)
-                    }
-                }
-
-                Text("FreeKit can manage its own status items. macOS does not expose a supported API for rearranging other apps' menu bar items.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.dsFaint)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 2)
-            }
-            .padding(.bottom, 12)
+            MenuBarSettingsPane(registry: registry)
+                .padding(.bottom, 12)
         }
     }
 }

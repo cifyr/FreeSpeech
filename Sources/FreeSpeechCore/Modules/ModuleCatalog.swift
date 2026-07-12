@@ -55,8 +55,8 @@ public enum ModuleCatalog {
 
     public static let menuBarManager = ModuleInfo(
         id: "menubar", displayName: "Menu Bar",
-        summary: "Hide and rearrange system-wide menu bar items, Ice-style.",
-        symbolName: "menubar.rectangle", status: .comingSoon, ownsMenuBarItem: true)
+        summary: "A configurable shelf for FreeKit tools and their menu bar controls.",
+        symbolName: "menubar.rectangle", status: .available, ownsMenuBarItem: true)
 
     public static let cotypist = ModuleInfo(
         id: "cotypist", displayName: "Cotypist",
@@ -81,8 +81,8 @@ public enum ModuleCatalog {
     // Notch widget lives in the notch, so it never gets a menu bar item.
     public static let boringNotch = ModuleInfo(
         id: "boringnotch", displayName: "Boring Notch",
-        summary: "Turns the notch area into a small widget surface.",
-        symbolName: "sparkles.rectangle.stack", status: .comingSoon, ownsMenuBarItem: false)
+        summary: "An expandable top-screen surface for time, app context, and quick tools.",
+        symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
     public static let all: [ModuleInfo] = [
         speech, notebook, autoclicker, stats, capsLock,

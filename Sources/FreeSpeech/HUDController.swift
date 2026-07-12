@@ -104,7 +104,6 @@ final class HUDController {
             statusRow.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             statusRow.topAnchor.constraint(equalTo: card.topAnchor),
             statusRow.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            sourceTag.centerYAnchor.constraint(equalTo: waveRow.centerYAnchor),
             waveform.centerYAnchor.constraint(equalTo: waveRow.centerYAnchor),
             waveform.heightAnchor.constraint(equalToConstant: hudStyle == .microCapsule ? 14 : 18),
             dot.widthAnchor.constraint(equalToConstant: 6),
@@ -384,10 +383,10 @@ final class WaveformLineView: NSView {
                 let s2 = sin(p * .pi * 2 * 0.6 - phase * 1.15)
                 v = max(0.05, (0.5 + 0.26 * s1 + 0.24 * s2) * window)
             }
-            let h = max(2.5, CGFloat(v) * bounds.height)
+            let h = min(bounds.height - 2, max(2.5, CGFloat(v) * bounds.height))
             let rect = NSRect(
                 x: CGFloat(i) * (barWidth + gap),
-                y: (bounds.height - h) / 2,
+                y: 1,
                 width: barWidth, height: h)
             NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
         }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# FreeSpeech build: vendors whisper.cpp, runs tests, produces dist/FreeSpeech.app,
+# FreeKit build: vendors whisper.cpp, runs tests, produces dist/FreeKit.app,
 # and fetches the default whisper model (the only network access, one-time).
 # Usage: ./build.sh [--skip-model] [--model base.en|small.en|...]
 set -euo pipefail
@@ -55,18 +55,18 @@ done
 echo "==> Running unit tests"
 (cd "$ROOT" && swift test "${LINKER_FLAGS[@]}")
 
-echo "==> Building FreeSpeech (release)"
+echo "==> Building FreeKit (release)"
 (cd "$ROOT" && swift build -c release "${LINKER_FLAGS[@]}")
 
-echo "==> Assembling dist/FreeSpeech.app"
-APP="$ROOT/dist/FreeSpeech.app"
+echo "==> Assembling dist/FreeKit.app"
+APP="$ROOT/dist/FreeKit.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/FreeSpeech" "$APP/Contents/MacOS/FreeSpeech"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # Icon is pre-generated from assets/logo.svg (qlmanage render + iconutil) and
 # committed, so the build has no fragile SVG-rendering dependency.
-cp "$ROOT/Resources/FreeSpeech.icns" "$APP/Contents/Resources/FreeSpeech.icns"
+cp "$ROOT/Resources/FreeKit.icns" "$APP/Contents/Resources/FreeKit.icns"
 # Record where this build came from so the in-app updater can fetch/pull/rebuild.
 SOURCE_REV="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 plutil -replace FSSourceRevision -string "$SOURCE_REV" "$APP/Contents/Info.plist"
@@ -85,10 +85,12 @@ fi
 
 # Install: keep /Applications current so the copy Caden actually runs is always
 # the latest signed build. A running instance keeps its old code until relaunch.
-INSTALL_APP="/Applications/FreeSpeech.app"
+INSTALL_APP="/Applications/FreeKit.app"
 echo "==> Installing to $INSTALL_APP"
 rm -rf "$INSTALL_APP"
 cp -R "$APP" "$INSTALL_APP"
+# Remove the old product name after the renamed app is safely installed.
+rm -rf "/Applications/FreeSpeech.app"
 
 if [[ "$SKIP_MODEL" -eq 0 ]]; then
     MODEL_FILE="$MODELS_DIR/ggml-$MODEL_NAME.bin"

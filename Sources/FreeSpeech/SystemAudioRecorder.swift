@@ -10,7 +10,7 @@ enum SystemAudioError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "Screen Recording not granted — enable FreeSpeech in System Settings > Privacy & Security > Screen Recording"
+            return "Screen Recording not granted — enable FreeKit in System Settings > Privacy & Security > Screen Recording"
         case .noDisplay:
             return "No display available for system audio capture"
         case .captureStartFailed(let err):

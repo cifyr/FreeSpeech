@@ -202,7 +202,7 @@ final class SpeechModule: NSObject, AppModule {
     // MARK: - Accessibility state relay (suite owns the shared tap)
 
     func noteAccessibilityMissing() {
-        showError("Accessibility not granted — enable FreeSpeech in System Settings > Privacy & Security > Accessibility")
+        showError("Accessibility not granted — enable FreeKit in System Settings > Privacy & Security > Accessibility")
     }
 
     func noteAccessibilityGranted() {
@@ -287,7 +287,7 @@ final class SpeechModule: NSObject, AppModule {
                     self.loadModelFile(file)
                 case .failure(let error):
                     self.setModelStatus(nil)
-                    self.showError("Model download failed: \(error.localizedDescription). Check your connection, then reopen FreeSpeech.")
+                    self.showError("Model download failed: \(error.localizedDescription). Check your connection, then reopen FreeKit.")
                 }
             }
         })
@@ -372,7 +372,7 @@ final class SpeechModule: NSObject, AppModule {
         case .microphone:
             guard Permissions.microphoneAuthorized() else {
                 permissionCoach.show(.microphone)
-                perform(machine.handle(.recordingFailed("Microphone not granted — enable FreeSpeech in System Settings > Privacy & Security > Microphone"), mode: settings.mode))
+                perform(machine.handle(.recordingFailed("Microphone not granted — enable FreeKit in System Settings > Privacy & Security > Microphone"), mode: settings.mode))
                 return
             }
             // HUD first: it must appear the instant the hotkey fires.

@@ -41,6 +41,15 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Settings(defaults: defaults).hotkey, .f13)
     }
 
+    func testDisabledHotkeysRoundTrip() {
+        settings.hotkey = .disabled
+        settings.systemAudioHotkey = .disabled
+        let restored = Settings(defaults: defaults)
+        XCTAssertEqual(restored.hotkey, .disabled)
+        XCTAssertEqual(restored.systemAudioHotkey, .disabled)
+        XCTAssertEqual(restored.hotkey.displayName, "Not Set")
+    }
+
     func testPostProcessingRoundTrip() {
         settings.postProcessing = .tone
         settings.tone = .concise

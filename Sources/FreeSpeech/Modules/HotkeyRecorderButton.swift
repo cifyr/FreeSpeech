@@ -1,9 +1,8 @@
 import SwiftUI
 import FreeSpeechCore
 
-// Shared shortcut recorder for module settings panes: shows the current chord,
-// click to record the next keypress/combo (Esc cancels). Same idiom as the
-// Speech settings recorder, backed by the same ShortcutCapture.
+// Shared shortcut recorder for module settings panes. Escape clears the
+// binding; clicking elsewhere leaves its current value unchanged.
 struct HotkeyRecorderButton: View {
     let label: String
     @State var preset: HotkeyPreset

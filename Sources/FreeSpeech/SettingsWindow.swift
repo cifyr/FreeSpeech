@@ -256,8 +256,8 @@ final class SettingsStore: ObservableObject {
         learnedSummary = "\(learningStore.promotedCount) active rules, \(learningStore.ruleCount) corrections observed"
     }
 
-    // Captures the next chord as the hotkey: a plain key, a combo like Cmd+K or
-    // Cmd+Opt+Space, or a bare modifier (press and release it alone). Esc cancels.
+    // Captures a plain key, combo, or bare modifier. Escape clears the binding;
+    // clicking anywhere else cancels without changing the stored shortcut.
     func beginShortcutCapture(for target: ShortcutTarget) {
         guard !shortcutCapture.isCapturing else { return }
         capturingTarget = target
@@ -479,7 +479,7 @@ struct SettingsView: View {
                     Text(store.learnedSummary)
                         .font(.system(size: 13))
                         .foregroundStyle(Color.dsMuted)
-                    Text("After each dictation, FreeSpeech watches how you edit the inserted text (locally, via Accessibility) and learns your corrections. A fix seen twice becomes an automatic rule and biases future transcription.")
+                    Text("After each dictation, FreeKit watches how you edit the inserted text (locally, via Accessibility) and learns your corrections. A fix seen twice becomes an automatic rule and biases future transcription.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                     Button("Reset Learned Corrections") { store.resetLearning() }
@@ -887,23 +887,24 @@ struct SettingsView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.dsMuted)
                 .frame(width: 96, alignment: .leading)
-            Text(capturing ? "PRESS A KEY\u{2026}" : preset.displayName.uppercased())
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .kerning(0.8)
-                .foregroundStyle(capturing ? Color.dsAccent : Color.dsPaper)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.horizontal, 14)
-                .frame(minWidth: 112, maxWidth: .infinity, minHeight: 36, maxHeight: 36)
-                .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
-                        .strokeBorder(capturing ? Color.dsAccent : Color.dsLine, lineWidth: 1))
-            Button(capturing ? "Cancel" : "Record") {
+            Button {
                 capturing ? store.endShortcutCapture() : store.beginShortcutCapture(for: target)
+            } label: {
+                Text(capturing ? "PRESS A KEY\u{2026}" : preset.displayName.uppercased())
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .kerning(0.8)
+                    .foregroundStyle(capturing ? Color.dsAccent : Color.dsPaper)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .padding(.horizontal, 14)
+                    .frame(minWidth: 112, maxWidth: .infinity, minHeight: 36, maxHeight: 36)
+                    .background(Color.dsInk2, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
+                            .strokeBorder(capturing ? Color.dsAccent : Color.dsLine, lineWidth: 1))
             }
-            .buttonStyle(GhostButtonStyle())
-            .fixedSize()
+            .buttonStyle(.plain)
+            .help(capturing ? "Click elsewhere to cancel" : "Record shortcut")
         }
     }
 
@@ -1034,7 +1035,7 @@ final class SettingsWindowController {
                 rootView: SettingsView(store: store, updates: store.updates))
             let w = NSWindow(contentViewController: hosting)
             w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-            w.title = "FreeSpeech Settings"
+            w.title = "FreeKit — Speech Settings"
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.appearance = NSAppearance(named: .darkAqua)  // Greenlight is dark-only

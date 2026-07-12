@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>FreeSpeech</string>
+	<string>FreeKit</string>
 	<key>CFBundleDisplayName</key>
-	<string>FreeSpeech</string>
+	<string>FreeKit</string>
 	<key>CFBundleExecutable</key>
 	<string>FreeSpeech</string>
 	<key>CFBundleIconFile</key>
-	<string>FreeSpeech</string>
+	<string>FreeKit</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.cadenwarren.freespeech</string>
 	<key>CFBundlePackageType</key>
@@ -25,6 +25,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>FreeSpeech records from your microphone only while the dictation hotkey is held, and transcribes entirely on this Mac. Audio never leaves the machine.</string>
+	<string>FreeKit records from your microphone only while the Speech hotkey is active, and transcribes entirely on this Mac. Audio never leaves the machine.</string>
 </dict>
 </plist>

@@ -284,7 +284,7 @@ public final class Settings {
     public var vocabularyHint: String {
         get {
             defaults.string(forKey: Key.vocabularyHint)
-                ?? "Caden Warren, Claude Code, FreeSpeech. My specialty is to use Claude Code on projects."
+                ?? "Caden Warren, Claude Code, FreeKit. My specialty is to use Claude Code on projects."
         }
         set { defaults.set(newValue, forKey: Key.vocabularyHint) }
     }

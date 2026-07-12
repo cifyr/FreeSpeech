@@ -112,12 +112,19 @@ struct AppCleanerFile: Identifiable, Equatable {
     let category: String
 }
 
+struct AppCleanerRemovalResult: Equatable {
+    let appName: String
+    let itemCount: Int
+    let reclaimedBytes: Int64
+}
+
 final class AppCleanerViewModel: ObservableObject {
     @Published private(set) var apps: [AppCleanerEntry] = []
     @Published private(set) var isScanning = false
     @Published private(set) var scannedCount = 0
     @Published var selectedID: URL?
     @Published var errorMessage: String?
+    @Published var removalResult: AppCleanerRemovalResult?
 
     private var scanID = UUID()
 
@@ -183,6 +190,10 @@ final class AppCleanerViewModel: ObservableObject {
     func moveToTrash(_ entry: AppCleanerEntry, includeLeftovers: Bool) {
         var urls = [entry.url]
         if includeLeftovers { urls.append(contentsOf: entry.leftovers.map(\.url)) }
+        let result = AppCleanerRemovalResult(
+            appName: entry.name,
+            itemCount: urls.count,
+            reclaimedBytes: includeLeftovers ? entry.totalSize : entry.appSize)
         NSWorkspace.shared.recycle(urls) { [weak self] _, error in
             DispatchQueue.main.async {
                 if let error {
@@ -190,6 +201,7 @@ final class AppCleanerViewModel: ObservableObject {
                 } else {
                     self?.apps.removeAll { $0.id == entry.id }
                     self?.selectedID = self?.apps.first?.id
+                    self?.removalResult = result
                 }
             }
         }
@@ -242,7 +254,6 @@ final class AppCleanerViewModel: ObservableObject {
             ("Preferences", "Preferences"),
             ("Saved Application State", "Saved State"),
             ("Logs", "Logs"),
-            ("Containers", "Container"),
         ]
         let identifiers = [bundleIdentifier, appName].compactMap { $0?.lowercased() }
         guard !identifiers.isEmpty else { return [] }
@@ -327,14 +338,20 @@ struct AppCleanerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            toolbar
-            HStack(alignment: .top, spacing: 14) {
-                appList
-                    .frame(minWidth: 250, idealWidth: 290, maxWidth: 340)
-                Rectangle().fill(Color.dsLine).frame(width: 1)
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        Group {
+            if let result = model.removalResult {
+                removalComplete(result)
+            } else {
+                VStack(spacing: 12) {
+                    toolbar
+                    HStack(alignment: .top, spacing: 14) {
+                        appList
+                            .frame(minWidth: 250, idealWidth: 290, maxWidth: 340)
+                        Rectangle().fill(Color.dsLine).frame(width: 1)
+                        detail
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                }
             }
         }
         .frame(height: 500)
@@ -359,6 +376,54 @@ struct AppCleanerView: View {
                 Button("OK") { model.errorMessage = nil }
             } message: { Text(model.errorMessage ?? "Unknown error") }
         .onChange(of: config.includeSystemApps) { _, value in model.scan(includeSystemApps: value) }
+    }
+
+    private func removalComplete(_ result: AppCleanerRemovalResult) -> some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(Color.dsAccent.opacity(0.12)).frame(width: 76, height: 76)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(Color.dsAccent)
+            }
+            VStack(spacing: 6) {
+                Text("Removal Complete")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color.dsPaper)
+                Text("\(result.appName) and its selected files are in Trash.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.dsMuted)
+            }
+            HStack(spacing: 8) {
+                completionMetric("Items", "\(result.itemCount)")
+                completionMetric(
+                    "Reclaimed",
+                    ByteCountFormatter.string(fromByteCount: result.reclaimedBytes, countStyle: .file))
+            }
+            .frame(maxWidth: 360)
+            HStack(spacing: 10) {
+                Button("Open Trash") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.Trash")) }
+                    .buttonStyle(GhostButtonStyle())
+                Button("Clean Another App") { model.removalResult = nil }
+                    .buttonStyle(PrimaryButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func completionMetric(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.dsFaint)
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.dsPaper)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(12)
+        .background(Color.dsInk2,
+                    in: RoundedRectangle(cornerRadius: DS.radiusKeycap, style: .continuous))
     }
 
     private var toolbar: some View {

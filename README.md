@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/banner-dark.png">
   <source media="(prefers-color-scheme: light)" srcset=".github/assets/banner-light.png">
-  <img alt="FreeSpeech — local voice dictation for macOS" src=".github/assets/banner-dark.png" width="100%">
+  <img alt="FreeKit — local macOS utility suite" src=".github/assets/banner-dark.png" width="100%">
 </picture>
 
 <br><br>
@@ -60,8 +60,8 @@ Requires Xcode command-line tools and `cmake` (`brew install cmake`).
 
 ```bash
 git clone <this-repo> FreeSpeech && cd FreeSpeech
-./build.sh                 # vendors whisper.cpp, runs tests, builds dist/FreeSpeech.app, fetches the model
-open dist/FreeSpeech.app   # grant Microphone + Accessibility on first run
+./build.sh                 # vendors whisper.cpp, runs tests, builds dist/FreeKit.app, fetches the model
+open dist/FreeKit.app      # grant Microphone + Accessibility on first run
 ```
 
 To produce a shareable package:

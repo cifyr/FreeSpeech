@@ -64,6 +64,14 @@ final class ModuleSettingsTests: XCTestCase {
         XCTAssertEqual(restored.modifiers, [])
     }
 
+    func testModuleHotkeyCanBeDisabled() {
+        settings.setModuleHotkey(.disabled, id: "notebook")
+        XCTAssertEqual(
+            Settings(defaults: defaults).moduleHotkey(
+                id: "notebook", defaultPreset: .f13),
+            .disabled)
+    }
+
     func testModuleScalarsAreNamespacedPerModule() {
         settings.setModuleDouble(0.25, id: "autoclicker", key: "interval")
         settings.setModuleInt(100, id: "autoclicker", key: "maxClicks")

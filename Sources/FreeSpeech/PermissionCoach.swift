@@ -22,11 +22,11 @@ enum CoachPermission {
     var instruction: String {
         switch self {
         case .microphone:
-            return "Flip the switch next to FreeSpeech in the Microphone list."
+            return "Flip the switch next to FreeKit in the Microphone list."
         case .accessibility:
-            return "Flip the switch next to FreeSpeech in the list. Not listed? Click + at the bottom and pick FreeSpeech from Applications."
+            return "Flip the switch next to FreeKit in the list. Not listed? Click + at the bottom and pick FreeKit from Applications."
         case .screenRecording:
-            return "Flip the switch next to FreeSpeech in the list. macOS may ask to quit and reopen the app."
+            return "Flip the switch next to FreeKit in the list. macOS may ask to quit and reopen the app."
         }
     }
 

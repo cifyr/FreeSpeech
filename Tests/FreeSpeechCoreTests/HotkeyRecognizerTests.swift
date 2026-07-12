@@ -44,6 +44,16 @@ final class HotkeyRecognizerTests: XCTestCase {
             .fire(.up, swallow: true))
     }
 
+    func testDisabledPresetNeverFires() {
+        let recognizer = HotkeyRecognizer(preset: .disabled)
+        XCTAssertEqual(
+            recognizer.handle(kind: .keyDown, keyCode: 105, flags: 0, isAutorepeat: false),
+            .pass)
+        XCTAssertEqual(
+            recognizer.handle(kind: .flagsChanged, keyCode: 61, flags: optionFlag, isAutorepeat: false),
+            .pass)
+    }
+
     func testAutorepeatWhileHeldIsSwallowedSilently() {
         let recognizer = HotkeyRecognizer(preset: .f13)
         _ = recognizer.handle(kind: .keyDown, keyCode: 105, flags: 0, isAutorepeat: false)

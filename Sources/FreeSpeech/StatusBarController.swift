@@ -48,16 +48,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let (symbol, description, line): (String, String, String)
         switch state {
         case .idle:
-            (symbol, description, line) = ("mic", "FreeSpeech idle", "Idle — hold \(settings.hotkey.displayName)")
+            (symbol, description, line) = ("mic", "FreeKit Speech idle", "Idle — hold \(settings.hotkey.displayName)")
         case .recording(let source):
             (symbol, description, line) = (
                 source == .systemAudio ? "speaker.wave.2.fill" : "mic.fill",
-                "FreeSpeech recording",
+                "FreeKit Speech recording",
                 "Recording (\(source.displayName))…")
         case .transcribing:
-            (symbol, description, line) = ("waveform", "FreeSpeech transcribing", "Transcribing…")
+            (symbol, description, line) = ("waveform", "FreeKit Speech transcribing", "Transcribing…")
         case .error(let message):
-            (symbol, description, line) = ("mic.slash", "FreeSpeech error", "Error: \(message)")
+            (symbol, description, line) = ("mic.slash", "FreeKit Speech error", "Error: \(message)")
         }
         statusLine = line
         if let button = statusItem.button {

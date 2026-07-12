@@ -82,7 +82,7 @@ final class UpdateManager: ObservableObject {
             Log.info("update build succeeded, relaunching")
             self.setStatus(.updating("Relaunching\u{2026}"))
             DispatchQueue.main.async {
-                self.relaunch(appPath: "\(source)/dist/FreeSpeech.app")
+                self.relaunch(appPath: "\(source)/dist/FreeKit.app")
             }
         }
     }

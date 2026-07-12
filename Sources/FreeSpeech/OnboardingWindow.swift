@@ -199,8 +199,8 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 14) {
-            heroTitle("Welcome to FreeSpeech")
-            body("FreeSpeech turns your voice into text in any app — fully on your Mac, nothing sent to the cloud. Hold a hotkey, speak, and the words appear wherever your cursor is.")
+            heroTitle("Welcome to FreeKit")
+            body("FreeKit turns your voice into text in any app — fully on your Mac, nothing sent to the cloud. Hold a hotkey, speak, and the words appear wherever your cursor is.")
             body("This quick setup grants two permissions, sets your two hotkeys, and lets you try it once. Takes about a minute.")
         }
     }
@@ -208,14 +208,14 @@ struct OnboardingView: View {
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 14) {
             bigTitle("Grant two permissions")
-            body("FreeSpeech needs these to hear you and to type for you. Both are checked locally by macOS.")
+            body("FreeKit needs these to hear you and to type for you. Both are checked locally by macOS.")
             permissionRow(name: "Microphone", granted: store.micGranted,
                           detail: "To capture your speech.", action: store.requestMic)
             permissionRow(name: "Accessibility", granted: store.accessibilityGranted,
                           detail: "To insert text into the app you're using, via the global hotkey.",
                           action: store.requestAccessibility)
             if !store.permissionsSatisfied {
-                body("Grant both to continue. Accessibility opens System Settings — flip FreeSpeech on, and this updates automatically.")
+                body("Grant both to continue. Accessibility opens System Settings — flip FreeKit on, and this updates automatically.")
                     .foregroundStyle(Color.dsFaint)
             }
         }
@@ -224,7 +224,7 @@ struct OnboardingView: View {
     private var hotkeyStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             bigTitle("Pick your two hotkeys")
-            body("FreeSpeech listens to two sources, each on its own hotkey. Pick a preset or record any key, combo, or bare modifier. \(modeNote)")
+            body("FreeKit Speech listens to two sources, each on its own hotkey. Pick a preset or record any key, combo, or bare modifier. \(modeNote)")
             hotkeyPicker(
                 title: "Voice in — your microphone",
                 detail: "Transcribes what you say into the focused app. This is normal dictation.",
@@ -269,7 +269,7 @@ struct OnboardingView: View {
     private var keywords: some View {
         VStack(alignment: .leading, spacing: 14) {
             bigTitle("Teach it your words")
-            body("Names, jargon, and product names you say often. FreeSpeech uses these to transcribe them correctly — e.g. proper names or tools like \u{201C}Claude Code\u{201D}.")
+            body("Names, jargon, and product names you say often. FreeKit uses these to transcribe them correctly — e.g. proper names or tools like \u{201C}Claude Code\u{201D}.")
             TextEditor(text: $store.vocabularyHint)
                 .font(.system(size: 13))
                 .scrollContentBackground(.hidden)
@@ -287,7 +287,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 14) {
             heroTitle("You're all set")
             body("\(store.actionVerb(store.hotkey.displayName)) anywhere to dictate your voice. \(store.actionVerb(store.systemHotkey.displayName)) to transcribe what your Mac is playing.")
-            body("FreeSpeech lives in your menu bar — open it anytime for settings and models. Everything runs on-device.")
+            body("FreeKit stays available from the Dock and its optional menu bar tools. Everything runs on-device.")
         }
     }
 

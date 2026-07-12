@@ -74,24 +74,6 @@ enum AppearanceDensity: String, CaseIterable, Identifiable {
     }
 }
 
-enum SuiteMenuIcon: String, CaseIterable, Identifiable {
-    case grid = "Grid"
-    case toolkit = "Toolkit"
-    case spark = "Spark"
-    case command = "Command"
-
-    var id: String { rawValue }
-
-    var symbolName: String {
-        switch self {
-        case .grid: return "square.grid.2x2"
-        case .toolkit: return "wrench.and.screwdriver"
-        case .spark: return "sparkles"
-        case .command: return "command"
-        }
-    }
-}
-
 final class AppearanceManager: ObservableObject {
     static let shared = AppearanceManager()
 
@@ -105,8 +87,6 @@ final class AppearanceManager: ObservableObject {
         static let depth = "appearance.depth"
         static let corners = "appearance.corners"
         static let density = "appearance.density"
-        static let suiteMenuIcon = "appearance.menu.icon"
-        static let suiteMenuQuickTools = "appearance.menu.quickTools"
     }
 
     static let defaultAccentHex = "FF453A"
@@ -128,12 +108,6 @@ final class AppearanceManager: ObservableObject {
     @Published var depth: AppearanceDepth { didSet { persist(depth.rawValue, forKey: Key.depth) } }
     @Published var corners: AppearanceCornerStyle { didSet { persist(corners.rawValue, forKey: Key.corners) } }
     @Published var density: AppearanceDensity { didSet { persist(density.rawValue, forKey: Key.density) } }
-    @Published var suiteMenuIcon: SuiteMenuIcon {
-        didSet { persist(suiteMenuIcon.rawValue, forKey: Key.suiteMenuIcon) }
-    }
-    @Published var suiteMenuQuickTools: Bool {
-        didSet { persist(suiteMenuQuickTools, forKey: Key.suiteMenuQuickTools) }
-    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -147,8 +121,6 @@ final class AppearanceManager: ObservableObject {
         depth = AppearanceDepth(rawValue: defaults.string(forKey: Key.depth) ?? "") ?? .soft
         corners = AppearanceCornerStyle(rawValue: defaults.string(forKey: Key.corners) ?? "") ?? .balanced
         density = AppearanceDensity(rawValue: defaults.string(forKey: Key.density) ?? "") ?? .comfortable
-        suiteMenuIcon = SuiteMenuIcon(rawValue: defaults.string(forKey: Key.suiteMenuIcon) ?? "") ?? .grid
-        suiteMenuQuickTools = defaults.object(forKey: Key.suiteMenuQuickTools) as? Bool ?? true
     }
 
     var accentColor: NSColor { NSColor(hex: accentHex) ?? NSColor.systemRed }
@@ -166,8 +138,6 @@ final class AppearanceManager: ObservableObject {
         depth = .soft
         corners = .balanced
         density = .comfortable
-        suiteMenuIcon = .grid
-        suiteMenuQuickTools = true
     }
 
     private func persist(_ value: Any, forKey key: String) {

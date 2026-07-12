@@ -24,6 +24,7 @@ enum ShortcutCaptureGate {
 // clears the binding; clicking elsewhere cancels without changing it.
 final class ShortcutCapture {
     private var monitor: Any?
+    private var globalMouseMonitor: Any?
     private var involvedModifiers: Set<Int64> = []
     private var onResult: ((HotkeyPreset) -> Void)?
     private var onClear: (() -> Void)?
@@ -84,11 +85,18 @@ final class ShortcutCapture {
                 return event
             }
         }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [
+            .leftMouseDown, .rightMouseDown, .otherMouseDown,
+        ]) { [weak self] _ in
+            DispatchQueue.main.async { self?.cancel() }
+        }
     }
 
     func end() {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         monitor = nil
+        globalMouseMonitor = nil
         involvedModifiers = []
         onResult = nil
         onClear = nil
