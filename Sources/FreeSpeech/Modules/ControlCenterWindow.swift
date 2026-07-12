@@ -111,7 +111,7 @@ struct ControlCenterView: View {
                                 expanded: expandedID == info.id,
                                 showsOpenButton: selectedSection == .apps,
                                 onToggleExpanded: {
-                                    withAnimation(.easeOut(duration: DS.durBase)) {
+                                    withAnimation(DS.animBase) {
                                         expandedID = expandedID == info.id ? nil : info.id
                                     }
                                 })
