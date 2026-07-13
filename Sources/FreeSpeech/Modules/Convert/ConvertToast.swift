@@ -4,7 +4,9 @@ import FreeSpeechCore
 
 // Where the result toast sits on the active screen; composed from a vertical
 // edge and a horizontal alignment so the settings UI can offer two short rows.
-enum ClopToastLocation: String, CaseIterable, Identifiable {
+// Mirrors ClopToastLocation; kept as its own type since each module owns its
+// small toast UI rather than sharing one across the suite.
+enum ConvertToastLocation: String, CaseIterable, Identifiable {
     case bottomLeft, bottomCenter, bottomRight, topLeft, topCenter, topRight
     var id: String { rawValue }
 
@@ -27,7 +29,7 @@ enum ClopToastLocation: String, CaseIterable, Identifiable {
         case .bottomRight, .topRight: return .right
         }
     }
-    static func make(bottom: Bool, align: Align) -> ClopToastLocation {
+    static func make(bottom: Bool, align: Align) -> ConvertToastLocation {
         switch (bottom, align) {
         case (true, .left): return .bottomLeft
         case (true, .center): return .bottomCenter
@@ -37,8 +39,6 @@ enum ClopToastLocation: String, CaseIterable, Identifiable {
         case (false, .right): return .topRight
         }
     }
-    // 20pt inset from the usable edges; bottom sits a little higher so it clears
-    // the Dock, matching the original placement.
     func origin(in visible: NSRect, panelSize: NSSize) -> NSPoint {
         let inset: CGFloat = 20
         let x: CGFloat
@@ -52,17 +52,16 @@ enum ClopToastLocation: String, CaseIterable, Identifiable {
     }
 }
 
-// Floating result readout: every optimization outcome surfaces here for a
-// couple of seconds, so "nothing happened" is always distinguishable from
-// "left untouched on purpose" without opening a menu. Main thread only.
-enum ClopToast {
+// Floating result readout: every conversion outcome surfaces here for a
+// couple of seconds. Main thread only.
+enum ConvertToast {
     private static var panel: NSPanel?
-    private static let model = ClopToastModel()
+    private static let model = ConvertToastModel()
     private static var dismissWork: DispatchWorkItem?
 
     static func show(_ message: String,
                      duration: TimeInterval = 2.6,
-                     location: ClopToastLocation = .bottomCenter) {
+                     location: ConvertToastLocation = .bottomCenter) {
         if panel == nil { panel = makePanel() }
         guard let panel else { return }
         model.message = message
@@ -76,7 +75,7 @@ enum ClopToast {
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, duration), execute: work)
     }
 
-    private static func position(_ panel: NSPanel, location: ClopToastLocation) {
+    private static func position(_ panel: NSPanel, location: ConvertToastLocation) {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
@@ -98,21 +97,21 @@ enum ClopToast {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.contentView = NSHostingView(rootView: ClopToastView(model: model))
+        panel.contentView = NSHostingView(rootView: ConvertToastView(model: model))
         return panel
     }
 }
 
-private final class ClopToastModel: ObservableObject {
+private final class ConvertToastModel: ObservableObject {
     @Published var message = ""
 }
 
-private struct ClopToastView: View {
-    @ObservedObject var model: ClopToastModel
+private struct ConvertToastView: View {
+    @ObservedObject var model: ConvertToastModel
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "rectangle.compress.vertical")
+            Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.dsAccent)
             Text(model.message)
@@ -120,8 +119,6 @@ private struct ClopToastView: View {
                 .foregroundStyle(Color.dsPaper)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                // A back-to-back toast reuses the visible panel; crossfade the
-                // readout instead of snapping so the byte count settles calmly.
                 .dsContentCrossfade(model.message)
         }
         .padding(.horizontal, 16)

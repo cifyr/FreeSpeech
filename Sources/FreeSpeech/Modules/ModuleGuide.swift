@@ -75,6 +75,14 @@ enum ModuleGuides {
             .init(icon: "music.note", title: "Sources and widgets",
                   detail: "Choose Spotify or Apple Music and toggle the clock, battery, and calendar."),
         ]),
+        ModuleCatalog.convert.id: ModuleGuide(steps: [
+            .init(icon: "arrow.triangle.2.circlepath", title: "Pick your targets",
+                  detail: "Choose the output format for images, audio, video, documents, and PDFs, once each."),
+            .init(icon: "hand.draw", title: "Drop to convert",
+                  detail: "Drag files onto the menu-bar icon; nothing converts until you explicitly ask it to."),
+            .init(icon: "keyboard", title: "Clipboard and Finder",
+                  detail: "Hotkeys convert whatever file is on the clipboard or selected in Finder, no drag required."),
+        ]),
     ]
 }
 

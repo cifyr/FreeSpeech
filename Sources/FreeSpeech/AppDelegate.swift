@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry: ModuleRegistry!
     private var speech: SpeechModule!
     private var controlCenter: ControlCenterWindowController!
-    private var clopServiceBridge: ClopServiceBridge!
+    private var serviceBridge: SuiteServiceBridge!
 
     private var accessibilityPollTimer: Timer?
 
@@ -34,15 +34,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.register(BoringNotchModule(registry: registry))
         registry.register(ClopModule(settings: settings, hub: eventHub))
         registry.register(ShelfModule(settings: settings))
+        registry.register(ConvertModule(settings: settings, hub: eventHub))
         for info in [ModuleCatalog.cotypist, ModuleCatalog.linearMouse,
-                     ModuleCatalog.amphetamine, ModuleCatalog.convert] {
+                     ModuleCatalog.amphetamine] {
             registry.register(PlaceholderModule(info: info))
         }
 
-        // The provider lives at app level so the right-click service always
-        // resolves; it gates on the Clop module actually being enabled.
-        clopServiceBridge = ClopServiceBridge(registry: registry)
-        NSApp.servicesProvider = clopServiceBridge
+        // The provider lives at app level so the right-click services always
+        // resolve; each gates on its own module actually being enabled.
+        serviceBridge = SuiteServiceBridge(registry: registry)
+        NSApp.servicesProvider = serviceBridge
 
         // No suite menu bar item: the Dock icon is the door into FreeKit now.
         controlCenter = ControlCenterWindowController(registry: registry)

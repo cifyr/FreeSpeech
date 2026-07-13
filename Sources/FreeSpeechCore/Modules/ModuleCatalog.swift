@@ -86,7 +86,7 @@ public enum ModuleCatalog {
     public static let convert = ModuleInfo(
         id: "convert", displayName: "Convert",
         summary: "Drag-and-drop file conversion between image, audio, video, and document formats, done on-device.",
-        symbolName: "arrow.triangle.2.circlepath", status: .comingSoon, ownsMenuBarItem: true)
+        symbolName: "arrow.triangle.2.circlepath", status: .available, ownsMenuBarItem: true)
 
     // The shelf is summoned by the shake gesture, not from the menu bar.
     public static let shelf = ModuleInfo(

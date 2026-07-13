@@ -27,7 +27,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>FreeKit reads upcoming events to show what is next beside the notch.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>FreeKit controls playback and reads the current track from Spotify and Apple Music, and reads the Finder selection when you use the Optimize shortcut.</string>
+	<string>FreeKit controls playback and reads the current track from Spotify and Apple Music, and reads the Finder selection when you use the Optimize or Convert shortcut.</string>
 	<key>NSServices</key>
 	<array>
 		<dict>
@@ -49,8 +49,36 @@
 				<string>public.file-url</string>
 			</array>
 		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Convert with FreeKit</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>convertWithFreeKit</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.image</string>
+				<string>public.audio</string>
+				<string>public.movie</string>
+				<string>com.adobe.pdf</string>
+				<string>public.plain-text</string>
+				<string>public.rtf</string>
+				<string>public.html</string>
+				<string>com.microsoft.word.doc</string>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>org.oasis-open.opendocument.text</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.file-url</string>
+			</array>
+		</dict>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>FreeKit records from your microphone only while the Speech hotkey is active, and transcribes entirely on this Mac. Audio never leaves the machine.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>FreeKit shows a live camera preview only while you have the notch's Mirror mode open, so you can check how you look before a call. Nothing is recorded or leaves the machine.</string>
 </dict>
 </plist>
