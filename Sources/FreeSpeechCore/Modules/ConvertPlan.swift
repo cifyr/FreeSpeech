@@ -273,4 +273,34 @@ public enum ConvertPlan {
             if !fileExists(candidate) { return candidate }
         }
     }
+
+    // "document.pdf" page 3 -> "document-page-3.jpg", stepping to a
+    // "(2)" suffix on an unlikely collision (splitting the same PDF twice
+    // into the same folder without cleaning up first).
+    public static func pageNumberedURL(for url: URL, page: Int, targetExtension: String,
+                                       fileExists: (URL) -> Bool) -> URL {
+        let directory = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent
+        var attempt = 0
+        while true {
+            attempt += 1
+            let suffix = attempt == 1 ? "-page-\(page)" : "-page-\(page) (\(attempt))"
+            let candidate = directory.appendingPathComponent(base + suffix)
+                .appendingPathExtension(targetExtension)
+            if !fileExists(candidate) { return candidate }
+        }
+    }
+
+    // "Combined.pdf" in `directory`, stepping to "Combined 2.pdf" and on so
+    // an earlier combine result in the same folder is never overwritten.
+    public static func combinedPDFURL(baseName: String, in directory: URL,
+                                      fileExists: (URL) -> Bool) -> URL {
+        var attempt = 0
+        while true {
+            attempt += 1
+            let name = attempt == 1 ? baseName : "\(baseName) \(attempt)"
+            let candidate = directory.appendingPathComponent(name).appendingPathExtension("pdf")
+            if !fileExists(candidate) { return candidate }
+        }
+    }
 }

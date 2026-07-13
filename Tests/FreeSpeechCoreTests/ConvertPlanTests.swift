@@ -134,4 +134,30 @@ final class ConvertPlanTests: XCTestCase {
         let backup = ConvertPlan.backupURL(for: url, in: dir) { taken.contains($0.path) }
         XCTAssertEqual(backup.path, "/tmp/convert-backups/deck 2.docx")
     }
+
+    func testPageNumberedURLAppendsPageSuffix() {
+        let url = URL(fileURLWithPath: "/tmp/docs/report.pdf")
+        let page = ConvertPlan.pageNumberedURL(for: url, page: 3, targetExtension: "jpg") { _ in false }
+        XCTAssertEqual(page.path, "/tmp/docs/report-page-3.jpg")
+    }
+
+    func testPageNumberedURLDedupesCollisions() {
+        let url = URL(fileURLWithPath: "/tmp/report.pdf")
+        let taken: Set<String> = ["/tmp/report-page-1.jpg"]
+        let page = ConvertPlan.pageNumberedURL(for: url, page: 1, targetExtension: "jpg") { taken.contains($0.path) }
+        XCTAssertEqual(page.path, "/tmp/report-page-1 (2).jpg")
+    }
+
+    func testCombinedPDFURLUsesBaseName() {
+        let dir = URL(fileURLWithPath: "/tmp/photos")
+        let combined = ConvertPlan.combinedPDFURL(baseName: "Combined", in: dir) { _ in false }
+        XCTAssertEqual(combined.path, "/tmp/photos/Combined.pdf")
+    }
+
+    func testCombinedPDFURLDedupesCollisions() {
+        let dir = URL(fileURLWithPath: "/tmp/photos")
+        let taken: Set<String> = ["/tmp/photos/Combined.pdf"]
+        let combined = ConvertPlan.combinedPDFURL(baseName: "Combined", in: dir) { taken.contains($0.path) }
+        XCTAssertEqual(combined.path, "/tmp/photos/Combined 2.pdf")
+    }
 }

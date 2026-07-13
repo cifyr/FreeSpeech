@@ -52,7 +52,7 @@ enum ConvertEngine {
 
     // MARK: - Images
 
-    static func convertImage(at url: URL, to format: ConvertPlan.ImageFormat) throws -> Data {
+    static func convertImage(at url: URL, to format: ConvertPlan.ImageFormat, quality: Double = 0.92) throws -> Data {
         let data = try Data(contentsOf: url)
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw ConvertError.unreadableImage(detail: "\(data.count) bytes, unrecognized data")
@@ -69,7 +69,12 @@ enum ConvertEngine {
             throw ConvertError.unreadableImage(detail: "decode failed")
         }
         if format == .pdf {
-            return try wrapImageAsPDF(cgImage)
+            let document = PDFDocument()
+            document.insert(try pdfPage(for: cgImage), at: 0)
+            guard let data = document.dataRepresentation() else {
+                throw ConvertError.encodeFailed(format: "pdf", detail: "dataRepresentation returned nil")
+            }
+            return data
         }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let outputType: UTType
@@ -95,7 +100,7 @@ enum ConvertEngine {
             // onto white automatically rather than the black some older
             // encoders default to (verified against a known-transparent
             // source), so no manual compositing pass is needed here.
-            options[kCGImageDestinationLossyCompressionQuality] = 0.92
+            options[kCGImageDestinationLossyCompressionQuality] = quality
         }
         CGImageDestinationAddImage(destination, cgImage, options as CFDictionary)
         guard CGImageDestinationFinalize(destination), out.length > 0 else {
@@ -104,13 +109,36 @@ enum ConvertEngine {
         return out as Data
     }
 
-    private static func wrapImageAsPDF(_ cgImage: CGImage) throws -> Data {
+    // Shared by the single-image "convert to PDF" path and combineImagesToPDF.
+    private static func pdfPage(for cgImage: CGImage) throws -> PDFPage {
         let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         guard let page = PDFPage(image: image) else {
             throw ConvertError.encodeFailed(format: "pdf", detail: "PDFPage init failed")
         }
+        return page
+    }
+
+    // Combines N images (in order) into one multi-page PDF, for the App tab's
+    // "combine into one PDF" action. Animated sources are rejected the same
+    // way convertImage rejects them: a flattened frame would misrepresent them.
+    static func combineImagesToPDF(_ urls: [URL]) throws -> Data {
         let document = PDFDocument()
-        document.insert(page, at: 0)
+        for (index, url) in urls.enumerated() {
+            let data = try Data(contentsOf: url)
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                throw ConvertError.unreadableImage(detail: url.lastPathComponent)
+            }
+            let frameCount = CGImageSourceGetCount(source)
+            if frameCount > 1 {
+                throw ConvertError.animatedImage(frames: frameCount)
+            }
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, [
+                kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary) else {
+                throw ConvertError.unreadableImage(detail: "\(url.lastPathComponent): decode failed")
+            }
+            document.insert(try pdfPage(for: cgImage), at: index)
+        }
         guard let data = document.dataRepresentation() else {
             throw ConvertError.encodeFailed(format: "pdf", detail: "dataRepresentation returned nil")
         }
@@ -327,13 +355,34 @@ enum ConvertEngine {
 
     // MARK: - PDF sources
 
-    static func rasterizeFirstPage(at url: URL, format: ConvertPlan.PDFTarget) throws -> Data {
+    static func rasterizeFirstPage(at url: URL, format: ConvertPlan.PDFTarget, quality: Double = 0.92) throws -> Data {
         guard let document = PDFDocument(url: url) else {
             throw ConvertError.unreadablePDF(detail: url.lastPathComponent)
         }
         guard document.pageCount > 0, let page = document.page(at: 0) else {
             throw ConvertError.emptyPDF
         }
+        return try rasterize(page: page, format: format, quality: quality)
+    }
+
+    // Every page of the source PDF as its own JPEG, for the App tab's "split
+    // into JPEGs" action. Always JPEG (unlike rasterizeFirstPage, which
+    // supports PNG too) since a whole-document split is a size-conscious
+    // operation the way a PDF viewer's "export as images" is.
+    static func rasterizeAllPages(at url: URL, quality: Double = 0.92) throws -> [Data] {
+        guard let document = PDFDocument(url: url) else {
+            throw ConvertError.unreadablePDF(detail: url.lastPathComponent)
+        }
+        guard document.pageCount > 0 else {
+            throw ConvertError.emptyPDF
+        }
+        return try (0..<document.pageCount).map { index in
+            guard let page = document.page(at: index) else { throw ConvertError.rasterizeFailed }
+            return try rasterize(page: page, format: .jpeg, quality: quality)
+        }
+    }
+
+    private static func rasterize(page: PDFPage, format: ConvertPlan.PDFTarget, quality: Double) throws -> Data {
         let bounds = page.bounds(for: .mediaBox)
         // ~144dpi from a 72dpi PDF page: sharp enough for screen or print reuse.
         let scale: CGFloat = 2
@@ -343,7 +392,7 @@ enum ConvertEngine {
             throw ConvertError.rasterizeFailed
         }
         let fileType: NSBitmapImageRep.FileType = format == .png ? .png : .jpeg
-        guard let data = rep.representation(using: fileType, properties: [.compressionFactor: 0.92]) else {
+        guard let data = rep.representation(using: fileType, properties: [.compressionFactor: quality]) else {
             throw ConvertError.rasterizeFailed
         }
         return data

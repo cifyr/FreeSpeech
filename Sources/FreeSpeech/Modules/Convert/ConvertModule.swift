@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 import FreeSpeechCore
 
 // Convert: on-device format conversion for images, audio, video, and
@@ -303,7 +302,11 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         convertFiles(urls, forcedTarget: target)
     }
 
-    func convertFiles(_ urls: [URL], forcedTarget: ConvertPlan.Target? = nil) {
+    // `imageQuality` is the App tab's per-operation quality knob (JPEG/HEIC
+    // compression, JPEG-rasterized PDF pages); nil keeps ConvertEngine's
+    // default. It has no persisted setting of its own — Convert's defaults
+    // (Tool tab) don't model quality at all, only format.
+    func convertFiles(_ urls: [URL], forcedTarget: ConvertPlan.Target? = nil, imageQuality: Double? = nil) {
         let target = forcedTarget ?? Self.currentTarget(settings: settings)
         Log.info("convert: converting \(urls.count) file(s), destination=\(target.destination.rawValue)")
         runTracked { [self] in
@@ -321,7 +324,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
                 batchProgress = (index, urls.count)
                 updateStatusIcon()
                 do {
-                    if try await convertFile(url, target: target) {
+                    if try await convertFile(url, target: target, imageQuality: imageQuality) {
                         convertedCount += 1
                     } else {
                         skipped += 1
@@ -358,7 +361,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
     // sitting in the target format). Video always re-encodes even when the
     // extension already matches: "mp4" covers both H.264 and HEVC, so an
     // extension match alone cannot tell whether the codec already matches.
-    private func convertFile(_ url: URL, target: ConvertPlan.Target) async throws -> Bool {
+    private func convertFile(_ url: URL, target: ConvertPlan.Target, imageQuality: Double? = nil) async throws -> Bool {
         guard let kind = ConvertPlan.mediaKind(forFileExtension: url.pathExtension),
               let targetExt = target.outputExtension(forSourceExtension: url.pathExtension) else {
             Log.info("convert: skipped \(url.lastPathComponent): unsupported type")
@@ -373,7 +376,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         case .image:
             let format = target.image
             let data = try await Task.detached(priority: .userInitiated) {
-                try ConvertEngine.convertImage(at: url, to: format)
+                try ConvertEngine.convertImage(at: url, to: format, quality: imageQuality ?? 0.92)
             }.value
             try writeDataResult(data, for: url, targetExtension: targetExt, destination: target.destination)
         case .audio:
@@ -405,7 +408,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
             switch pdfTarget {
             case .png, .jpeg:
                 data = try await Task.detached(priority: .userInitiated) {
-                    try ConvertEngine.rasterizeFirstPage(at: url, format: pdfTarget)
+                    try ConvertEngine.rasterizeFirstPage(at: url, format: pdfTarget, quality: imageQuality ?? 0.92)
                 }.value
             case .plainText:
                 let text = try await Task.detached(priority: .userInitiated) {
@@ -416,6 +419,80 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
             try writeDataResult(data, for: url, targetExtension: targetExt, destination: target.destination)
         }
         return true
+    }
+
+    // MARK: - Split / combine (App tab only — one-to-many and many-to-one
+    // shapes that don't fit convertFiles' one-target-per-file model)
+
+    // One JPEG per page, written alongside the source PDF. `.replace` backs
+    // the PDF up and removes it once every page has been written — there is
+    // no single 1:1 file to rename in place the way a normal conversion does.
+    func splitPDF(_ url: URL, quality: Double, destination: ConvertPlan.FileDestination) {
+        Log.info("convert: splitting \(url.lastPathComponent), destination=\(destination.rawValue)")
+        runTracked { [self] in
+            beginWork()
+            do {
+                let pages = try await Task.detached(priority: .userInitiated) {
+                    try ConvertEngine.rasterizeAllPages(at: url, quality: quality)
+                }.value
+                for (index, data) in pages.enumerated() {
+                    let pageURL = ConvertPlan.pageNumberedURL(
+                        for: url, page: index + 1, targetExtension: "jpg") {
+                        FileManager.default.fileExists(atPath: $0.path)
+                    }
+                    try data.write(to: pageURL, options: .atomic)
+                    Log.info("convert: wrote \(pageURL.path)")
+                }
+                if destination == .replace {
+                    let backup = try backUp(url)
+                    try FileManager.default.removeItem(at: url)
+                    Log.info("convert: removed \(url.path) after split, backup at \(backup.path)")
+                }
+                endWork()
+                recordConversions(1)
+                finish(result: "Split into \(pages.count) page image\(pages.count == 1 ? "" : "s")")
+            } catch {
+                endWork()
+                Log.error("convert: split failed for \(url.path): \(error.localizedDescription)")
+                finish(result: "Could not split \(url.lastPathComponent)")
+            }
+        }
+    }
+
+    // All source images combined, in order, into one new PDF written
+    // alongside the first image. `.replace` backs each source up and removes
+    // it afterward — again there is no single 1:1 file to rename in place.
+    func combineImages(_ urls: [URL], destination: ConvertPlan.FileDestination) {
+        guard let first = urls.first else { return }
+        Log.info("convert: combining \(urls.count) image(s), destination=\(destination.rawValue)")
+        runTracked { [self] in
+            beginWork()
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try ConvertEngine.combineImagesToPDF(urls)
+                }.value
+                let combinedURL = ConvertPlan.combinedPDFURL(
+                    baseName: "Combined", in: first.deletingLastPathComponent()) {
+                    FileManager.default.fileExists(atPath: $0.path)
+                }
+                try data.write(to: combinedURL, options: .atomic)
+                Log.info("convert: wrote \(combinedURL.path)")
+                if destination == .replace {
+                    for source in urls {
+                        let backup = try backUp(source)
+                        try FileManager.default.removeItem(at: source)
+                        Log.info("convert: removed \(source.path) after combine, backup at \(backup.path)")
+                    }
+                }
+                endWork()
+                recordConversions(1)
+                finish(result: "Combined \(urls.count) image\(urls.count == 1 ? "" : "s") into \(combinedURL.lastPathComponent)")
+            } catch {
+                endWork()
+                Log.error("convert: combine failed: \(error.localizedDescription)")
+                finish(result: "Could not combine images")
+            }
+        }
     }
 
     private static func tempOutputURL(extension ext: String) -> URL {
@@ -550,6 +627,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
 
     private func beginWork() {
         working += 1
+        paneModel.working = true
         updateStatusIcon()
     }
 
@@ -558,6 +636,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         if working == 0 {
             videoProgress = nil
             batchProgress = nil
+            paneModel.working = false
         }
         updateStatusIcon()
     }
@@ -733,9 +812,15 @@ private final class ConvertDropView: NSView {
 
 final class ConvertPaneModel: ObservableObject {
     weak var module: ConvertModule?
+    // Lets the App tab disable Save/Replace mid-conversion without new
+    // plumbing — mirrors ConvertModule's own `working` counter.
+    @Published var working = false
 }
 
-private struct ConvertSettingsPane: View {
+// Tool tab: the persisted defaults background triggers (hotkey, Finder,
+// clipboard, drop-zone) use. Interactive per-file conversion lives in the
+// App tab (ConvertAppTabView, ConvertAppTab.swift) instead.
+struct ConvertToolTabView: View {
     @ObservedObject var model: ConvertPaneModel
     let settings: Settings
 
@@ -750,7 +835,6 @@ private struct ConvertSettingsPane: View {
     @State private var showToast: Bool
     @State private var toastDuration: Double
     @State private var toastLocation: ConvertToastLocation
-    @State private var appDropTargeted = false
     @ObservedObject var registry: ModuleRegistry
 
     init(model: ConvertPaneModel, settings: Settings, registry: ModuleRegistry) {
@@ -779,7 +863,6 @@ private struct ConvertSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            appDropTarget
             DSSettingsCard(title: "Images") {
                 optionRow("Target") {
                     ForEach(ConvertPlan.ImageFormat.allCases, id: \.rawValue) { value in
@@ -931,69 +1014,6 @@ private struct ConvertSettingsPane: View {
                     .foregroundStyle(Color.dsFaint)
             }
         }
-    }
-
-    // The Apps-tab entry point: opening Convert from there lands you straight
-    // on this pane, so dropping a file here (rather than only via the
-    // transient bottom-screen catcher or a hotkey) is the "drag files into
-    // the app" surface.
-    private var appDropTarget: some View {
-        DSSettingsCard(title: "Convert") {
-            HStack {
-                Spacer()
-                VStack(spacing: 6) {
-                    Image(systemName: "arrow.down.doc")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(appDropTargeted ? Color.dsAccent : Color.dsMuted)
-                    Text("Drop files here to convert")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.dsPaper)
-                    Text("Uses your configured formats below")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.dsFaint)
-                }
-                Spacer()
-            }
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.dsInk2.opacity(0.4)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(
-                        appDropTargeted ? Color.dsAccent : Color.dsLine,
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
-            .animation(DS.animBase, value: appDropTargeted)
-            .onDrop(of: [.fileURL], isTargeted: $appDropTargeted) { providers in
-                handleDrop(providers)
-            }
-        }
-    }
-
-    // NSItemProvider loads run off-main and can complete on arbitrary
-    // threads; the lock guards `urls` until every provider has reported in,
-    // then the batch is handed to Convert on the main queue.
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !providers.isEmpty else { return false }
-        let lock = NSLock()
-        var urls: [URL] = []
-        let group = DispatchGroup()
-        for provider in providers {
-            group.enter()
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                defer { group.leave() }
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                lock.lock()
-                urls.append(url)
-                lock.unlock()
-            }
-        }
-        group.notify(queue: .main) {
-            guard !urls.isEmpty else { return }
-            model.module?.convertFiles(urls)
-        }
-        return true
     }
 
     private func setToastLocation(_ location: ConvertToastLocation) {
