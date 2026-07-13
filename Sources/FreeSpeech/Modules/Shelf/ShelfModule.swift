@@ -112,6 +112,14 @@ final class ShelfModule: NSObject, AppModule {
         panelController.show(near: point)
     }
 
+    // Entry point for other modules bridging files in directly (e.g. dragging onto the
+    // notch) rather than the shake gesture.
+    func addToShelf(_ urls: [URL], near point: NSPoint) {
+        panelController.keepItemsOnClose = keepOnClose
+        panelController.store.add(urls)
+        panelController.show(near: point)
+    }
+
     func clearShelf() {
         panelController.store.clear()
     }
@@ -156,6 +164,7 @@ private struct ShelfSettingsPane: View {
                             settings.setModuleDouble($0, id: moduleID, key: ShelfModule.Key.sensitivity)
                         }), in: 0...1)
                         .tint(Color.dsAccent)
+                        .dsNoWindowDrag()
                     Text("High")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)

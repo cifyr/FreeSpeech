@@ -303,6 +303,23 @@ extension View {
     func dsLivePulse(_ active: Bool, dimTo: Double = 0.45) -> some View {
         modifier(DSLivePulse(active: active, dimTo: dimTo))
     }
+    // Every host window sets isMovableByWindowBackground so empty chrome can
+    // drag it, but that races SwiftUI's own drag gesture on a Slider — AppKit
+    // was winning and moving the window instead of the thumb. This drops an
+    // invisible NSView behind the control that claims the hit-test spot and
+    // refuses the window-drag, leaving the slider's own gesture to run.
+    func dsNoWindowDrag() -> some View {
+        background(DSWindowDragBlocker())
+    }
+}
+
+private struct DSWindowDragBlocker: NSViewRepresentable {
+    final class BlockerView: NSView {
+        override var mouseDownCanMoveWindow: Bool { false }
+    }
+
+    func makeNSView(context: Context) -> BlockerView { BlockerView() }
+    func updateNSView(_ nsView: BlockerView, context: Context) {}
 }
 
 // AppKit mirror of the grammar for NSView/NSPanel surfaces (HUD, module panels

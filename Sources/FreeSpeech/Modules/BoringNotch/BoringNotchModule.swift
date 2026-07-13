@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import CoreImage
 import EventKit
@@ -25,6 +26,17 @@ enum BoringNotchCollapsedContent: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// How the calendar wing lays out upcoming events. List is the original two-line-per-event
+/// layout; Compact trades detail for count (more events, one line each); Agenda leads with a
+/// large "time until" readout for the very next event, the way a glance at a real notch app
+/// (Notchable, NotchNook) tends to foreground urgency over a flat list.
+enum BoringNotchCalendarStyle: String, CaseIterable, Identifiable {
+    case list = "List"
+    case compact = "Compact"
+    case agenda = "Agenda"
+    var id: String { rawValue }
+}
+
 final class BoringNotchPreferences: ObservableObject {
     static let shared = BoringNotchPreferences()
     private enum Key {
@@ -42,9 +54,13 @@ final class BoringNotchPreferences: ObservableObject {
         static let trackPeekDuration = "notch.trackPeekDuration"
         static let showCalendar = "notch.showCalendar"
         static let calendarHours = "notch.calendarHours"
+        static let calendarStyle = "notch.calendarStyle"
         static let hoverTolerance = "notch.hoverTolerance"
         static let showClock = "notch.showClock"
         static let showBattery = "notch.showBattery"
+        static let showStats = "notch.showStats"
+        static let showTimerButton = "notch.showTimerButton"
+        static let showMirrorButton = "notch.showMirrorButton"
         static let collapsedContent = "notch.collapsedContent"
         static let mediaWingLeading = "notch.mediaWingLeading"
     }
@@ -63,10 +79,24 @@ final class BoringNotchPreferences: ObservableObject {
     @Published var trackPeekDuration: Double { didSet { defaults.set(trackPeekDuration, forKey: Key.trackPeekDuration) } }
     @Published var showCalendar: Bool { didSet { defaults.set(showCalendar, forKey: Key.showCalendar) } }
     @Published var calendarHours: Double { didSet { defaults.set(calendarHours, forKey: Key.calendarHours) } }
+    @Published var calendarStyle: BoringNotchCalendarStyle {
+        didSet { defaults.set(calendarStyle.rawValue, forKey: Key.calendarStyle) }
+    }
     /// How far outside the closed cutout the pointer still counts as "on the notch". 0 = cutout only.
     @Published var hoverTolerance: Double { didSet { defaults.set(hoverTolerance, forKey: Key.hoverTolerance) } }
     @Published var showClock: Bool { didSet { defaults.set(showClock, forKey: Key.showClock) } }
     @Published var showBattery: Bool { didSet { defaults.set(showBattery, forKey: Key.showBattery) } }
+    // Off by default: a glance app's header strip is prime real estate, and CPU/memory is
+    // a deliberate opt-in, not something everyone wants competing with clock/battery.
+    @Published var showStats: Bool { didSet { defaults.set(showStats, forKey: Key.showStats) } }
+    @Published var showTimerButton: Bool {
+        didSet { defaults.set(showTimerButton, forKey: Key.showTimerButton) }
+    }
+    // Off by default: this gates a camera-permission prompt, so it should never fire
+    // without the user explicitly opting in first.
+    @Published var showMirrorButton: Bool {
+        didSet { defaults.set(showMirrorButton, forKey: Key.showMirrorButton) }
+    }
     @Published var collapsedContent: BoringNotchCollapsedContent {
         didSet { defaults.set(collapsedContent.rawValue, forKey: Key.collapsedContent) }
     }
@@ -88,9 +118,14 @@ final class BoringNotchPreferences: ObservableObject {
         trackPeekDuration = defaults.object(forKey: Key.trackPeekDuration) as? Double ?? 4
         showCalendar = defaults.object(forKey: Key.showCalendar) as? Bool ?? true
         calendarHours = defaults.object(forKey: Key.calendarHours) as? Double ?? 24
+        calendarStyle = BoringNotchCalendarStyle(
+            rawValue: defaults.string(forKey: Key.calendarStyle) ?? "") ?? .list
         hoverTolerance = defaults.object(forKey: Key.hoverTolerance) as? Double ?? 0
         showClock = defaults.object(forKey: Key.showClock) as? Bool ?? true
         showBattery = defaults.object(forKey: Key.showBattery) as? Bool ?? true
+        showStats = defaults.object(forKey: Key.showStats) as? Bool ?? false
+        showTimerButton = defaults.object(forKey: Key.showTimerButton) as? Bool ?? false
+        showMirrorButton = defaults.object(forKey: Key.showMirrorButton) as? Bool ?? false
         collapsedContent = BoringNotchCollapsedContent(
             rawValue: defaults.string(forKey: Key.collapsedContent) ?? "") ?? .nowPlaying
         mediaWingLeading = defaults.object(forKey: Key.mediaWingLeading) as? Bool ?? true
@@ -126,6 +161,138 @@ final class BoringBatteryModel: ObservableObject {
             return
         }
     }
+}
+
+/// Compact CPU/Memory glance for the header strip — reuses the same `StatsSampler` the
+/// Stats module's full menu-bar readouts are built on, so this is a second, independent
+/// cheap poll rather than new sampling logic.
+final class BoringStatsGlanceModel: ObservableObject {
+    static let shared = BoringStatsGlanceModel()
+    @Published private(set) var cpuUsage: Double = 0        // 0...1
+    @Published private(set) var memoryFraction: Double = 0  // 0...1
+    private let sampler = StatsSampler()
+    private var timer: Timer?
+
+    func start() {
+        refresh()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+    func stop() { timer?.invalidate(); timer = nil }
+
+    private func refresh() {
+        let snapshot = sampler.sample()
+        cpuUsage = snapshot.cpuUsage
+        memoryFraction = snapshot.memoryTotal > 0 ? snapshot.memoryUsed / snapshot.memoryTotal : 0
+    }
+}
+
+/// Quick countdown/Pomodoro timer, shown swapped in for the clock while running — a
+/// glance-friendly nudge without leaving the notch, matching Notchable's timer feature.
+final class BoringTimerModel: ObservableObject {
+    static let shared = BoringTimerModel()
+    @Published private(set) var remaining: TimeInterval?
+    private var timer: Timer?
+
+    func start(minutes: Double) {
+        remaining = minutes * 60
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+    }
+    func cancel() {
+        timer?.invalidate()
+        timer = nil
+        remaining = nil
+    }
+    private func tick() {
+        guard let value = remaining else { return }
+        if value <= 1 {
+            cancel()
+            NSSound.beep()
+            return
+        }
+        remaining = value - 1
+    }
+}
+
+/// Quick front-camera preview — boringNotch's own headline "Quick Mirror" feature: a fast
+/// look before a call, without opening Photo Booth or FaceTime. The session only ever runs
+/// while the mirror is actually open, and stops the moment the notch collapses.
+final class BoringMirrorModel: ObservableObject {
+    static let shared = BoringMirrorModel()
+    @Published private(set) var isRunning = false
+    @Published private(set) var authorizationDenied = false
+    let session = AVCaptureSession()
+    private var configured = false
+
+    func start() {
+        guard Permissions.cameraAuthorized() else {
+            Permissions.requestCamera { [weak self] granted in
+                guard let self else { return }
+                if granted { self.start() } else { self.authorizationDenied = true }
+            }
+            return
+        }
+        authorizationDenied = false
+        configureIfNeeded()
+        guard !session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.startRunning()
+            DispatchQueue.main.async { self?.isRunning = true }
+        }
+    }
+
+    func stop() {
+        guard session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.stopRunning()
+            DispatchQueue.main.async { self?.isRunning = false }
+        }
+    }
+
+    private func configureIfNeeded() {
+        guard !configured else { return }
+        configured = true
+        session.beginConfiguration()
+        session.sessionPreset = .medium
+        if let device = AVCaptureDevice.default(for: .video),
+           let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
+            session.addInput(input)
+        } else {
+            Log.error("notch mirror: no camera input available")
+        }
+        session.commitConfiguration()
+    }
+}
+
+/// Hosts an `AVCaptureVideoPreviewLayer` — SwiftUI has no native camera-preview view.
+private struct CameraPreviewView: NSViewRepresentable {
+    let session: AVCaptureSession
+
+    func makeNSView(context: Context) -> CameraPreviewNSView {
+        let view = CameraPreviewNSView()
+        view.previewLayer.session = session
+        view.previewLayer.videoGravity = .resizeAspectFill
+        return view
+    }
+    func updateNSView(_ nsView: CameraPreviewNSView, context: Context) {
+        // A mirror should look like a mirror, not a security-cam feed of yourself.
+        if let connection = nsView.previewLayer.connection, connection.isVideoMirrored != true {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = true
+        }
+    }
+}
+
+private final class CameraPreviewNSView: NSView {
+    let previewLayer = AVCaptureVideoPreviewLayer()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer = previewLayer
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 struct BoringNowPlaying: Equatable {
@@ -351,7 +518,7 @@ final class BoringCalendarModel: ObservableObject {
         let events = store.events(matching: store.predicateForEvents(withStart: now, end: end, calendars: nil))
             .filter { !$0.isAllDay && $0.endDate > now }
             .sorted { $0.startDate < $1.startDate }
-            .prefix(3)
+            .prefix(5)
         upcomingEvents = events.map {
             BoringCalendarItem(id: $0.eventIdentifier ?? UUID().uuidString,
                                title: $0.title ?? "Untitled Event", startDate: $0.startDate,
@@ -363,8 +530,9 @@ final class BoringCalendarModel: ObservableObject {
 
 final class BoringNotchModule: AppModule {
     let info = ModuleCatalog.boringNotch
-    private lazy var controller = BoringNotchPanelController(preferences: .shared)
-    init(registry: ModuleRegistry) {}
+    private let registry: ModuleRegistry
+    private lazy var controller = BoringNotchPanelController(preferences: .shared, registry: registry)
+    init(registry: ModuleRegistry) { self.registry = registry }
     func activate() { controller.show() }
     func deactivate() { controller.hide() }
     func setMenuBarItemVisible(_ visible: Bool) {}
@@ -432,21 +600,56 @@ struct NotchShape: Shape {
     }
 }
 
+/// An `NSHostingView` that also accepts file drags, so dropping a file directly onto the
+/// notch can bridge into the Shelf module instead of the notch needing its own file tray —
+/// the single most-requested feature across every competing notch app (NotchNook, boring.notch).
+private final class NotchDropCatcherHostingView<Content: View>: NSHostingView<Content> {
+    var onDropFiles: (([URL], NSPoint) -> Void)?
+
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        registerForDraggedTypes([.fileURL])
+    }
+    @available(*, unavailable)
+    @MainActor required dynamic init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptsFiles(sender) ? .copy : []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        acceptsFiles(sender) ? .copy : []
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+              !urls.isEmpty else { return false }
+        onDropFiles?(urls, NSEvent.mouseLocation)
+        return true
+    }
+    private func acceptsFiles(_ sender: NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.types?.contains(.fileURL) == true
+    }
+}
+
 final class BoringNotchPanelController {
     private let panel: NSPanel
     private let preferences: BoringNotchPreferences
+    private let registry: ModuleRegistry
     private let coordinator = OverlayLayoutCoordinator.shared
     private let state = BoringNotchPanelState()
     private let media = BoringNowPlayingModel.shared
     private let calendar = BoringCalendarModel.shared
     private let battery = BoringBatteryModel.shared
+    private let stats = BoringStatsGlanceModel.shared
+    private let timerModel = BoringTimerModel.shared
+    private let mirror = BoringMirrorModel.shared
     private var subscriptions: Set<AnyCancellable> = []
     private var collapseWork: DispatchWorkItem?
     private var peekWork: DispatchWorkItem?
     private var isExpanded: Bool { state.expanded }
 
-    init(preferences: BoringNotchPreferences) {
+    init(preferences: BoringNotchPreferences, registry: ModuleRegistry) {
         self.preferences = preferences
+        self.registry = registry
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: true)
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
@@ -460,11 +663,13 @@ final class BoringNotchPanelController {
         panel.isReleasedWhenClosed = false
         // Empty space around the shape has no SwiftUI view in it, so it never hit-tests and clicks
         // fall through to the menu bar underneath. Do not add a full-size background here.
-        panel.contentView = NSHostingView(rootView: BoringNotchPanelView(
+        let hostingView = NotchDropCatcherHostingView(rootView: BoringNotchPanelView(
             preferences: preferences, state: state, media: media, calendar: calendar,
             onToggle: { [weak self] in self?.setExpanded(!(self?.isExpanded ?? false)) },
             onPin: { [weak self] in self?.state.pinned.toggle() },
             onHover: { [weak self] in self?.handleHover($0) }))
+        hostingView.onDropFiles = { [weak self] urls, point in self?.handleDroppedFiles(urls, at: point) }
+        panel.contentView = hostingView
         preferences.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -472,6 +677,7 @@ final class BoringNotchPanelController {
                 self.preferences.showMedia ? self.media.start() : self.media.stop()
                 self.preferences.showCalendar ? self.calendar.start() : self.calendar.stop()
                 self.preferences.showBattery ? self.battery.start() : self.battery.stop()
+                self.preferences.showStats ? self.stats.start() : self.stats.stop()
                 self.media.refresh()
                 self.calendar.refresh()
             }
@@ -493,9 +699,11 @@ final class BoringNotchPanelController {
         if preferences.showMedia { media.start() }
         if preferences.showCalendar { calendar.start() }
         if preferences.showBattery { battery.start() }
+        if preferences.showStats { stats.start() }
     }
     func hide() {
-        collapseWork?.cancel(); peekWork?.cancel(); media.stop(); calendar.stop(); battery.stop()
+        collapseWork?.cancel(); peekWork?.cancel()
+        media.stop(); calendar.stop(); battery.stop(); stats.stop(); timerModel.cancel(); mirror.stop()
         panel.orderOut(nil); coordinator.clearNotch()
     }
     private func setExpanded(_ expanded: Bool) {
@@ -529,6 +737,13 @@ final class BoringNotchPanelController {
             DispatchQueue.main.asyncAfter(deadline: .now() + max(0.2, min(5, preferences.collapseDelay)),
                                           execute: work)
         }
+    }
+    // Only bridges to Shelf if that module is actually enabled — dropping a file on the
+    // notch shouldn't summon a tool the user turned off.
+    private func handleDroppedFiles(_ urls: [URL], at point: NSPoint) {
+        guard registry.isEnabled(id: ModuleCatalog.shelf.id),
+              let shelf = registry.module(id: ModuleCatalog.shelf.id) as? ShelfModule else { return }
+        shelf.addToShelf(urls, near: point)
     }
     /// The window itself never animates — it is parked at open size and the shape springs inside it.
     /// Animating an NSWindow frame cannot spring and always reads as stiff.
@@ -586,6 +801,9 @@ struct BoringNotchPanelView: View {
     @ObservedObject var media: BoringNowPlayingModel
     @ObservedObject var calendar: BoringCalendarModel
     @ObservedObject var battery = BoringBatteryModel.shared
+    @ObservedObject var stats = BoringStatsGlanceModel.shared
+    @ObservedObject var timerModel = BoringTimerModel.shared
+    @ObservedObject var mirror = BoringMirrorModel.shared
     let onToggle: () -> Void
     let onPin: () -> Void
     let onHover: (Bool) -> Void
@@ -619,13 +837,29 @@ struct BoringNotchPanelView: View {
             // Content swap crossfades on the shorter grammar timing, independent of the shape's spring.
             .animation(DS.animCrossfade, value: state.expanded)
             .frame(width: state.currentSize.width, height: state.currentSize.height)
-            .background(Color.dsInk0, in: shape)
-            // Always fades to black at the very top, so the panel blends into the
-            // physical camera cutout above it no matter what's rendered below.
-            .overlay(alignment: .top) {
-                LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom)
-                    .frame(height: min(48, state.currentSize.height * 0.4))
-                    .allowsHitTesting(false)
+            .background(alignment: .top) {
+                // Sits behind the clock/battery/text (which is drawn above, in the
+                // Group), above the plain ink fill — so it blends the panel into the
+                // physical camera cutout without washing out anything on top of it.
+                // Holds solid black through most of the band before fading out over just
+                // the last stretch, so the black reads as a deliberate slab, not a sliver.
+                ZStack(alignment: .top) {
+                    Color.dsInk0
+                    // The album-art tint wash sits behind the black fade, not in front of
+                    // it — otherwise a colorful album cover paints over the black band
+                    // instead of black winning at the top no matter what's playing.
+                    if state.expanded { artworkTintWash }
+                    // Solid for the top half of the panel, whatever its current height —
+                    // not a fixed/capped band — then fades out over the bottom half.
+                    LinearGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.5),
+                            .init(color: .black.opacity(0), location: 1),
+                        ]),
+                        startPoint: .top, endPoint: .bottom)
+                        .frame(height: state.currentSize.height)
+                }
             }
             // A physical notch must stay seamless bezel-black with no rim; the virtual bar on
             // notch-less displays has no cutout to blend into, so a hairline gives it definition
@@ -647,6 +881,11 @@ struct BoringNotchPanelView: View {
             .animation(expandAnimation, value: state.expanded)
             .animation(expandAnimation, value: state.peeking)
             .animation(expandAnimation, value: state.currentSize)
+            // A camera that keeps running after you've looked away and moved on is exactly
+            // the surprise this kind of feature should never spring.
+            .onChange(of: state.expanded) { _, expanded in
+                if !expanded { mirror.stop() }
+            }
     }
     private var collapsedContent: some View {
         Group {
@@ -729,26 +968,41 @@ struct BoringNotchPanelView: View {
     private var headerStrip: some View {
         HStack(spacing: 0) {
             Group {
-                if preferences.showClock {
-                    TimelineView(.everyMinute) { context in
-                        Text(context.date, format: .dateTime.hour().minute())
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.85))
+                HStack(spacing: 8) {
+                    if preferences.showTimerButton { timerControl }
+                    if preferences.showClock {
+                        TimelineView(.everyMinute) { context in
+                            Text(context.date, format: .dateTime.hour().minute())
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.white.opacity(0.85))
+                        }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Color.clear.frame(width: state.physicalNotchWidth)
             Group {
-                if preferences.showBattery {
-                    HStack(spacing: 5) {
-                        Text("\(battery.percent)%")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.85))
-                        Image(systemName: battery.charging ? "battery.100.bolt" : batterySymbol)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(battery.charging ? Color.dsAccent : Color.white.opacity(0.7))
+                HStack(spacing: 10) {
+                    if preferences.showStats {
+                        HStack(spacing: 7) {
+                            statReadout(symbol: "cpu", fraction: stats.cpuUsage)
+                            statReadout(symbol: "memorychip", fraction: stats.memoryFraction)
+                        }
                     }
+                    if preferences.showBattery {
+                        HStack(spacing: 5) {
+                            Text("\(battery.percent)%")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(batteryTint)
+                            Image(systemName: battery.charging ? "battery.100.bolt" : batterySymbol)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(batteryTint)
+                                // Breathes while actually drawing wall power; a plugged-in laptop
+                                // that's already full has nothing live to announce.
+                                .dsLivePulse(battery.charging && battery.percent < 100)
+                        }
+                    }
+                    if preferences.showMirrorButton { mirrorButton }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -764,17 +1018,72 @@ struct BoringNotchPanelView: View {
         default: return "battery.100"
         }
     }
+    /// Accent while charging (the notch's one "live" color); a warm warning once it's
+    /// actually low and not being topped up, so a glance catches it before it dies mid-call.
+    private var batteryTint: Color {
+        if battery.charging { return Color.dsAccent }
+        if battery.percent <= 15 { return .orange }
+        return Color.white.opacity(0.7)
+    }
+    /// One glyph + percent, matching the battery readout's voice so CPU/Memory read as part
+    /// of the same strip rather than a bolted-on widget.
+    private func statReadout(symbol: String, fraction: Double) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.55))
+            Text("\(Int((fraction * 100).rounded()))%")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.7))
+        }
+    }
+    /// A running timer replaces the icon with a live countdown (tap to cancel); idle, it's a
+    /// menu of common presets — no separate window, matching Notchable's inline timer.
+    @ViewBuilder
+    private var timerControl: some View {
+        if let remaining = timerModel.remaining {
+            Button { timerModel.cancel() } label: {
+                Text(Self.formatCountdown(remaining))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.dsAccent)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel timer")
+        } else {
+            Menu {
+                ForEach([5.0, 15.0, 25.0, 45.0], id: \.self) { minutes in
+                    Button("\(Int(minutes)) min") { timerModel.start(minutes: minutes) }
+                }
+            } label: {
+                Image(systemName: "timer")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Start a timer")
+        }
+    }
+    private static func formatCountdown(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.up))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
     private var expandedContent: some View {
         VStack(spacing: 0) {
             // The physical cutout owns this strip; the clock and battery fill the space beside it.
             headerStrip
                 .padding(.horizontal, NotchMetrics.openTopRadius + 16)
             HStack(alignment: .top, spacing: 18) {
-                // Each wing's content hugs whichever edge faces away from the divider, so
-                // swapping which side a wing sits on must also swap its own alignment —
-                // otherwise both wings cluster against the center divider instead of the
-                // shape's outer margins.
-                if preferences.mediaWingLeading {
+                if mirror.isRunning {
+                    // Mirror replaces both wings outright rather than fighting them for
+                    // space — you open it to look at yourself, not glance past a calendar.
+                    mirrorContent
+                } else if preferences.mediaWingLeading {
+                    // Each wing's content hugs whichever edge faces away from the divider, so
+                    // swapping which side a wing sits on must also swap its own alignment —
+                    // otherwise both wings cluster against the center divider instead of the
+                    // shape's outer margins.
                     if preferences.showMedia { wing(mediaWing, leading: true) }
                     if preferences.showMedia, preferences.showCalendar { wingDivider }
                     if preferences.showCalendar { wing(calendarWing, leading: false) }
@@ -792,7 +1101,6 @@ struct BoringNotchPanelView: View {
             .padding(.top, 6)
             Spacer(minLength: 0)
         }
-        .background(artworkTintWash)
         .overlay(alignment: .bottom) {
             Button(action: onPin) { Image(systemName: state.pinned ? "pin.fill" : "pin")
                 .font(.system(size: 9, weight: .semibold))
@@ -807,6 +1115,37 @@ struct BoringNotchPanelView: View {
     private var wingDivider: some View {
         Rectangle().fill(Color.white.opacity(0.06))
             .frame(width: 1).frame(maxHeight: .infinity).padding(.vertical, 2)
+    }
+    private var mirrorButton: some View {
+        Button {
+            mirror.isRunning ? mirror.stop() : mirror.start()
+        } label: {
+            Image(systemName: mirror.isRunning ? "video.fill" : "video")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(mirror.isRunning ? Color.dsAccent : Color.white.opacity(0.7))
+        }
+        .buttonStyle(.plain)
+        .help(mirror.isRunning ? "Close Mirror" : "Open Mirror")
+    }
+    /// Fills the wing area with a live front-camera preview, or a permission nudge if
+    /// camera access was denied — swapped in for both wings while the mirror is open.
+    private var mirrorContent: some View {
+        Group {
+            if mirror.authorizationDenied {
+                VStack(spacing: 6) {
+                    Image(systemName: "video.slash")
+                        .font(.system(size: 18)).foregroundStyle(Color.white.opacity(0.4))
+                    Text("Camera access is off")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.white.opacity(0.7))
+                    Button("Open Settings") { Permissions.openCameraSettings() }
+                        .buttonStyle(GhostButtonStyle())
+                }
+            } else {
+                CameraPreviewView(session: mirror.session)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     /// A faint wash of the current artwork's dominant color behind the whole expanded card —
     /// only while media is showing and real album art loaded, so an empty/calendar-only notch
@@ -874,6 +1213,17 @@ struct BoringNotchPanelView: View {
                 .scaledToFill()
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: min(8, size / 5), style: .continuous))
+                // Real artwork otherwise gives no live cue of its own; a small badge reads as
+                // "this is playing right now" without competing with the art itself.
+                .overlay(alignment: .bottomTrailing) {
+                    if media.item?.playing == true {
+                        MiniEqualizer(active: true)
+                            .scaleEffect(0.55)
+                            .padding(3)
+                            .background(Color.black.opacity(0.5), in: Circle())
+                            .padding(2)
+                    }
+                }
         } else {
             Group {
                 if media.item?.playing == true {
@@ -915,29 +1265,93 @@ struct BoringNotchPanelView: View {
                 Text(calendar.hasAccess ? "Nothing upcoming" : "Calendar access off")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.4))
             } else {
-                ForEach(Array(calendar.upcomingEvents.prefix(2))) { event in
-                    HStack(spacing: 8) {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(event.title)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Color.white)
-                                .lineLimit(1)
-                            HStack(spacing: 5) {
-                                Text(event.startDate, format: .dateTime.hour().minute())
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                Text(event.calendarName).lineLimit(1)
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundStyle(Color.white.opacity(0.38))
-                        }
-                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                            .fill(Color(nsColor: event.color))
-                            .frame(width: 3, height: 26)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                switch preferences.calendarStyle {
+                case .list: calendarListStyle
+                case .compact: calendarCompactStyle
+                case .agenda: calendarAgendaStyle
                 }
             }
         }
+    }
+    /// Original two-line-per-event layout: title, then time + calendar name, with a colored
+    /// bar on the trailing edge keyed to the source calendar.
+    private var calendarListStyle: some View {
+        ForEach(Array(calendar.upcomingEvents.prefix(2))) { event in
+            HStack(spacing: 8) {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(event.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(event.startDate, format: .dateTime.hour().minute())
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        Text(event.calendarName).lineLimit(1)
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(Color.white.opacity(0.38))
+                }
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Color(nsColor: event.color))
+                    .frame(width: 3, height: 26)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+    /// One line per event (dot + title + time) so more of the day fits without scrolling —
+    /// trades the calendar-name detail for count, the way NotchNook's timeline reads.
+    private var calendarCompactStyle: some View {
+        ForEach(Array(calendar.upcomingEvents.prefix(4))) { event in
+            HStack(spacing: 6) {
+                Text(event.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .lineLimit(1)
+                Text(event.startDate, format: .dateTime.hour().minute())
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.4))
+                Circle().fill(Color(nsColor: event.color)).frame(width: 5, height: 5)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+    /// Leads with a large "in Xm/Xh" readout for the very next event — foregrounds urgency
+    /// over a flat list, the way Notchable's agenda glance reads — then a thin tail of what's
+    /// after it.
+    private var calendarAgendaStyle: some View {
+        let events = Array(calendar.upcomingEvents.prefix(3))
+        return VStack(alignment: .trailing, spacing: 6) {
+            if let next = events.first {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(next.title)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(Self.relativeTime(from: context.date, to: next.startDate))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(nsColor: next.color))
+                    }
+                }
+                ForEach(events.dropFirst()) { event in
+                    HStack(spacing: 5) {
+                        Text(event.title).lineLimit(1)
+                            .font(.system(size: 10, weight: .medium))
+                        Text(event.startDate, format: .dateTime.hour().minute())
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    }
+                    .foregroundStyle(Color.white.opacity(0.4))
+                }
+            }
+        }
+    }
+    private static func relativeTime(from now: Date, to start: Date) -> String {
+        let seconds = start.timeIntervalSince(now)
+        if seconds <= 0 { return "Now" }
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "in \(minutes)m" }
+        let hours = minutes / 60, remainder = minutes % 60
+        return remainder == 0 ? "in \(hours)h" : "in \(hours)h \(remainder)m"
     }
 }
 
@@ -1000,6 +1414,13 @@ struct BoringNotchSettingsPane: View {
                     if !calendar.hasAccess { Button("Allow Calendar") { calendar.requestAccess() }.buttonStyle(GhostButtonStyle()) }
                 }
                 slider("Look ahead", value: $preferences.calendarHours, range: 1...72, suffix: "h")
+                HStack(spacing: 8) { ForEach(BoringNotchCalendarStyle.allCases) { style in
+                    DSChip(title: style.rawValue, selected: preferences.calendarStyle == style) {
+                        preferences.calendarStyle = style
+                    }
+                }}
+                Text(calendarStyleCaption)
+                    .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
             }
             DSSettingsCard(title: "Dimensions") {
                 if hasPhysicalNotch {
@@ -1017,6 +1438,20 @@ struct BoringNotchSettingsPane: View {
             DSSettingsCard(title: "Menu bar strip") {
                 DSToggleRow(title: "Show clock", isOn: $preferences.showClock)
                 DSToggleRow(title: "Show battery", isOn: $preferences.showBattery)
+                DSToggleRow(
+                    title: "Show CPU + Memory",
+                    caption: "A compact live glance, sampled every 2 seconds.",
+                    isOn: $preferences.showStats)
+                DSToggleRow(
+                    title: "Show quick timer",
+                    caption: "A timer icon next to the clock with common presets (5/15/25/45 min).",
+                    isOn: $preferences.showTimerButton)
+            }
+            DSSettingsCard(title: "Mirror") {
+                DSToggleRow(
+                    title: "Show mirror button",
+                    caption: "A camera icon that swaps the notch to a quick front-camera preview \u{2014} handy before a call. Asks for Camera access the first time you open it, and the camera never runs unless the mirror is open.",
+                    isOn: $preferences.showMirrorButton)
             }
             DSSettingsCard(title: "Behavior") {
                 DSToggleRow(title: "Expand on hover", isOn: $preferences.expandOnHover)
@@ -1047,11 +1482,18 @@ struct BoringNotchSettingsPane: View {
             }
         }
     }
+    private var calendarStyleCaption: String {
+        switch preferences.calendarStyle {
+        case .list: return "Title, time, and calendar name for the next two events."
+        case .compact: return "One line per event so more of the day fits at a glance."
+        case .agenda: return "Leads with a countdown to the very next event."
+        }
+    }
     private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, suffix: String = "pt") -> some View {
         HStack(spacing: 10) {
             Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dsPaper)
                 .frame(width: 112, alignment: .leading)
-            Slider(value: value, in: range).tint(Color.dsAccent)
+            Slider(value: value, in: range).tint(Color.dsAccent).dsNoWindowDrag()
             Text(suffix == "s" ? String(format: "%.1fs", value.wrappedValue) : "\(Int(value.wrappedValue))\(suffix)")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(Color.dsMuted)
                 .frame(width: 50, alignment: .trailing)

@@ -28,6 +28,31 @@ enum Permissions {
         }
     }
 
+    static func cameraAuthorized() -> Bool {
+        AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+    }
+
+    static func requestCamera(completion: @escaping (Bool) -> Void) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        Log.info("camera permission status: \(status.rawValue)")
+        switch status {
+        case .authorized:
+            completion(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                Log.info("camera permission request result: \(granted)")
+                DispatchQueue.main.async { completion(granted) }
+            }
+        default:
+            completion(false)
+        }
+    }
+
+    static func openCameraSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!
+        NSWorkspace.shared.open(url)
+    }
+
     static func accessibilityTrusted(promptIfNeeded: Bool) -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: promptIfNeeded]
         let trusted = AXIsProcessTrustedWithOptions(options as CFDictionary)

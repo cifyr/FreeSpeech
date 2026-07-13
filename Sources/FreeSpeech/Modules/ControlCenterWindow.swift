@@ -337,6 +337,7 @@ private struct AppearancePane: View {
                                 .foregroundStyle(Color.dsPaper)
                             Slider(value: $appearance.gradientIntensity, in: 0.1...0.85)
                                 .tint(Color.dsAccent)
+                                .dsNoWindowDrag()
                             Text("\(Int(appearance.gradientIntensity * 100))%")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(Color.dsMuted)
