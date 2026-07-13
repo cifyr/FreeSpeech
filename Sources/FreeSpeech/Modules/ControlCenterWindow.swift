@@ -660,7 +660,15 @@ private struct ModuleCard: View {
                     switch registry.module(id: info.id)?.settingsStyle {
                     case .popup where !showsOpenButton:
                         Button {
-                            registry.module(id: info.id)?.openSettings()
+                            // Convert's Tools-tab card is a proxy into its Apps-tab
+                            // home; opening it from here reads as configuring the
+                            // tool, so it should land on the Tool tab, not App.
+                            if info.id == ModuleCatalog.convert.id,
+                               let convert = registry.module(id: info.id) as? ConvertModule {
+                                convert.openSettingsOnToolTab()
+                            } else {
+                                registry.module(id: info.id)?.openSettings()
+                            }
                         } label: {
                             Image(systemName: "gearshape")
                                 .font(.system(size: 12, weight: .medium))

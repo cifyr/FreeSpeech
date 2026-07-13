@@ -11,10 +11,20 @@ struct ConvertSettingsPane: View {
     @ObservedObject var model: ConvertPaneModel
     let settings: Settings
     let registry: ModuleRegistry
-    @State private var tab: Tab = .app
+    @State private var tab: InitialTab
 
-    private enum Tab: String, CaseIterable {
+    // Which tab to land on when the popup opens: Convert's Apps-tab "Open"
+    // reads as launching the app, so it lands on App; its Tools-tab proxy
+    // card reads as configuring the tool, so it lands on Tool instead.
+    enum InitialTab: String, CaseIterable {
         case app = "App", tool = "Tool"
+    }
+
+    init(model: ConvertPaneModel, settings: Settings, registry: ModuleRegistry, initialTab: InitialTab = .app) {
+        self.model = model
+        self.settings = settings
+        self.registry = registry
+        _tab = State(initialValue: initialTab)
     }
 
     var body: some View {
@@ -31,7 +41,7 @@ struct ConvertSettingsPane: View {
         ZStack(alignment: .bottom) {
             Rectangle().fill(Color.dsLine).frame(height: 1)
             HStack(spacing: 24) {
-                ForEach(Tab.allCases, id: \.self) { candidate in
+                ForEach(InitialTab.allCases, id: \.self) { candidate in
                     DSTabButton(title: candidate.rawValue, selected: tab == candidate) {
                         tab = candidate
                     }

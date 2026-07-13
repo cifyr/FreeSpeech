@@ -29,6 +29,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
     private var lastUndo: FileUndo?
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private let paneModel = ConvertPaneModel()
+    private var landOnToolTabNextOpen = false
 
     private struct FileUndo {
         let original: URL
@@ -176,12 +177,22 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
     var settingsPopupSize: NSSize { NSSize(width: 640, height: 760) }
 
     func openSettings() {
+        landOnToolTabNextOpen = false
+        ControlCenterPresenter.shared.present(moduleID: info.id)
+    }
+
+    // Called instead of openSettings() when Convert is opened via its Tools
+    // tab proxy card (rather than its Apps tab home): that entry point reads
+    // as configuring the tool, so it should land on the Tool tab, not App.
+    func openSettingsOnToolTab() {
+        landOnToolTabNextOpen = true
         ControlCenterPresenter.shared.present(moduleID: info.id)
     }
 
     func makeSettingsPane() -> AnyView {
         paneModel.module = self
-        return AnyView(ConvertSettingsPane(model: paneModel, settings: settings, registry: registry))
+        let initialTab: ConvertSettingsPane.InitialTab = landOnToolTabNextOpen ? .tool : .app
+        return AnyView(ConvertSettingsPane(model: paneModel, settings: settings, registry: registry, initialTab: initialTab))
     }
 
     // MARK: - Drop zone
