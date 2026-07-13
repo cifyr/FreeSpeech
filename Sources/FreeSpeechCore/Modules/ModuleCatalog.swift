@@ -83,10 +83,13 @@ public enum ModuleCatalog {
 
     // Local, client-side format conversion (images/video/audio/docs), the
     // CloudConvert/FreeConvert niche without the upload. Prior art: p2r3/convert.
+    // ownsMenuBarItem is false because it lives in the Apps tab: like every
+    // other app-style tool it self-manages its own status item rather than
+    // having the registry drive it.
     public static let convert = ModuleInfo(
         id: "convert", displayName: "Convert",
         summary: "Drag-and-drop file conversion between image, audio, video, and document formats, done on-device.",
-        symbolName: "arrow.triangle.2.circlepath", status: .available, ownsMenuBarItem: true)
+        symbolName: "arrow.triangle.2.circlepath", status: .available, ownsMenuBarItem: false)
 
     // The shelf is summoned by the shake gesture, not from the menu bar.
     public static let shelf = ModuleInfo(
@@ -106,8 +109,12 @@ public enum ModuleCatalog {
     ]
 
     // Tools that read as small apps rather than ambient utilities; the control
-    // center fronts these in the Apps tab with a one-click Open.
-    public static let apps: [ModuleInfo] = [appCleaner, autoclicker]
+    // center fronts these in the Apps tab with a one-click Open. Convert keeps
+    // its Enabled/menu-bar toggles (which the Apps tab card doesn't show) in
+    // its own settings pane instead of the card, since — unlike AppCleaner and
+    // Tap — it has real background behavior tied to them (Finder services,
+    // hotkeys, its persistent menu bar icon).
+    public static let apps: [ModuleInfo] = [appCleaner, autoclicker, convert]
 
     public static func find(id: String) -> ModuleInfo? {
         all.first { $0.id == id }

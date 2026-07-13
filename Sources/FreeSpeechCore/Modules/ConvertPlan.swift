@@ -168,6 +168,33 @@ public enum ConvertPlan {
             self.destination = destination
         }
 
+        // A copy of `base` with exactly one kind's format overridden, used by
+        // the Finder "Convert to X" services: each one forces a specific
+        // format for its kind while every other kind stays at whatever the
+        // user has configured. Returns nil for a stale/unrecognized rawValue
+        // (e.g. a plist entry left over from an older build).
+        public static func overriding(kind: MediaKind, rawValue: String, base: Target) -> Target? {
+            var target = base
+            switch kind {
+            case .image:
+                guard let format = ImageFormat(rawValue: rawValue) else { return nil }
+                target.image = format
+            case .audio:
+                guard let format = AudioFormat(rawValue: rawValue) else { return nil }
+                target.audio = format
+            case .video:
+                guard let format = VideoFormat(rawValue: rawValue) else { return nil }
+                target.video = format
+            case .document:
+                guard let format = DocumentFormat(rawValue: rawValue) else { return nil }
+                target.document = format
+            case .pdf:
+                guard let format = PDFTarget(rawValue: rawValue) else { return nil }
+                target.pdf = format
+            }
+            return target
+        }
+
         // The extension a given source file would land on with this target
         // configuration, or nil if its kind is unrecognized.
         public func outputExtension(forSourceExtension ext: String) -> String? {

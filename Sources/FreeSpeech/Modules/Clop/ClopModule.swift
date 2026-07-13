@@ -35,7 +35,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var batchProgress: (done: Int, total: Int)?
     private let paneModel = ClopPaneModel()
-    private let dropZone = ClopDropZoneController()
+    private let dropZoneCoordinator: SuiteDropZoneCoordinator
 
     enum Key {
         static let images = "images"
@@ -66,9 +66,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         case file(original: URL, backup: URL, replacement: URL?)
     }
 
-    init(settings: Settings, hub: EventTapHub) {
+    init(settings: Settings, hub: EventTapHub, dropZoneCoordinator: SuiteDropZoneCoordinator) {
         self.settings = settings
         self.hub = hub
+        self.dropZoneCoordinator = dropZoneCoordinator
         super.init()
     }
 
@@ -121,7 +122,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             }
         }
         paneModel.module = self
-        dropZone.onDrop = { [weak self] urls, mode in self?.optimizeFiles(urls, mode: mode) }
+        // The drop zone always keeps the original format: Convert owns
+        // format-changing conversions now.
+        dropZoneCoordinator.onClopDrop = { [weak self] urls in self?.optimizeFiles(urls, mode: .keepOriginal) }
+        dropZoneCoordinator.setClopActive(dropZoneEnabled)
         startPollingIfNeeded()
         Log.info("clop: activated, watching clipboard")
     }
@@ -129,7 +133,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
     func deactivate() {
         active = false
         stopPolling()
-        dropZone.hide()
+        dropZoneCoordinator.setClopActive(false)
         cancelAllWork()
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
@@ -272,11 +276,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     private func poll() {
         guard active else { return }
-        if dropZoneEnabled {
-            dropZone.tick()
-        } else if dropZone.isVisible {
-            dropZone.hide()
-        }
+        // No-op unless the setting actually changed since the last tick.
+        dropZoneCoordinator.setClopActive(dropZoneEnabled)
         guard watching else { return }
         let pasteboard = NSPasteboard.general
         let changeCount = pasteboard.changeCount
@@ -1230,7 +1231,7 @@ private struct ClopSettingsPane: View {
                 }
                 DSToggleRow(
                     title: "Drop zone while dragging",
-                    caption: "A floating catcher appears at the bottom of the screen while you drag; it accepts images, videos, and PDFs.",
+                    caption: "A floating catcher appears at the bottom of the screen while you drag; it optimizes without changing format. If Convert's drop zone is also on, the catcher splits so you can choose either one.",
                     isOn: Binding(
                         get: { dropZoneOn },
                         set: {

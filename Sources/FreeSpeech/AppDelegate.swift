@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private let eventHub = EventTapHub()
     private let permissionCoach = PermissionCoachController()
+    private let dropZoneCoordinator = SuiteDropZoneCoordinator()
     private var registry: ModuleRegistry!
     private var speech: SpeechModule!
     private var controlCenter: ControlCenterWindowController!
@@ -32,9 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.register(CapsLockModule(settings: settings, hub: eventHub))
         registry.register(AppCleanerModule(settings: settings))
         registry.register(BoringNotchModule(registry: registry))
-        registry.register(ClopModule(settings: settings, hub: eventHub))
+        registry.register(ClopModule(settings: settings, hub: eventHub, dropZoneCoordinator: dropZoneCoordinator))
         registry.register(ShelfModule(settings: settings))
-        registry.register(ConvertModule(settings: settings, hub: eventHub))
+        registry.register(ConvertModule(
+            settings: settings, hub: eventHub, registry: registry, dropZoneCoordinator: dropZoneCoordinator))
         for info in [ModuleCatalog.cotypist, ModuleCatalog.linearMouse,
                      ModuleCatalog.amphetamine] {
             registry.register(PlaceholderModule(info: info))

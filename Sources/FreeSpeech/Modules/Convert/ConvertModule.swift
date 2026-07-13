@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import FreeSpeechCore
 
 // Convert: on-device format conversion for images, audio, video, and
@@ -13,11 +14,12 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
 
     private let settings: Settings
     private let hub: EventTapHub
+    private let registry: ModuleRegistry
+    private let dropZoneCoordinator: SuiteDropZoneCoordinator
 
     private var hotkeyToken: EventTapHub.HotkeyToken?
     private var finderHotkeyToken: EventTapHub.HotkeyToken?
     private var statusItem: NSStatusItem?
-    private var pollTimer: Timer?
     private var active = false
     private var working = 0
     private enum IconState { case idle, working }
@@ -28,7 +30,6 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
     private var lastUndo: FileUndo?
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private let paneModel = ConvertPaneModel()
-    private let dropZone = ConvertDropZoneController()
 
     private struct FileUndo {
         let original: URL
@@ -54,9 +55,12 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         static let finderHotkeyMods = "finderHotkeyModifiers"
     }
 
-    init(settings: Settings, hub: EventTapHub) {
+    init(settings: Settings, hub: EventTapHub, registry: ModuleRegistry,
+        dropZoneCoordinator: SuiteDropZoneCoordinator) {
         self.settings = settings
         self.hub = hub
+        self.registry = registry
+        self.dropZoneCoordinator = dropZoneCoordinator
         super.init()
     }
 
@@ -122,21 +126,32 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
             }
         }
         paneModel.module = self
-        dropZone.onDrop = { [weak self] urls in self?.convertFiles(urls) }
-        startPollingIfNeeded()
+        dropZoneCoordinator.onConvertDrop = { [weak self] urls in self?.convertFiles(urls) }
+        dropZoneCoordinator.setConvertActive(dropZoneEnabled)
+        // ownsMenuBarItem is false (Apps-tab modules self-manage), so the
+        // registry never calls setMenuBarItemVisible for us.
+        setMenuBarItemVisible(settings.moduleShowsMenuBarItem(id: info.id))
         Log.info("convert: activated")
     }
 
     func deactivate() {
         active = false
-        stopPolling()
-        dropZone.hide()
+        dropZoneCoordinator.setConvertActive(false)
         cancelAllWork()
+        setMenuBarItemVisible(false)
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
         if let finderHotkeyToken { hub.unregister(finderHotkeyToken) }
         finderHotkeyToken = nil
         Log.info("convert: deactivated")
+    }
+
+    // The settings pane calls this instead of routing through the registry
+    // (which only drives ownsMenuBarItem modules): persist, then update the
+    // status item live if Convert is currently active.
+    func setShowsMenuBarItem(_ shows: Bool) {
+        settings.setModuleShowsMenuBarItem(shows, id: info.id)
+        if active { setMenuBarItemVisible(shows) }
     }
 
     func setMenuBarItemVisible(_ visible: Bool) {
@@ -175,40 +190,20 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
 
     func makeSettingsPane() -> AnyView {
         paneModel.module = self
-        return AnyView(ConvertSettingsPane(model: paneModel, settings: settings))
+        return AnyView(ConvertSettingsPane(model: paneModel, settings: settings, registry: registry))
     }
 
-    // MARK: - Drop-zone polling
+    // MARK: - Drop zone
 
-    // Only drives the drop zone's drag detection; there is no clipboard
-    // watcher to poll for since Convert never acts without an explicit trigger.
-    private func startPollingIfNeeded() {
-        guard active, pollTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
-        timer.tolerance = 0.1
-        RunLoop.main.add(timer, forMode: .common)
-        pollTimer = timer
-    }
-
-    private func stopPolling() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
-
-    // Off by default: it floats at the same bottom-center spot Clop's zone
-    // uses, so running both at once means they can overlap. Opt-in avoids
-    // that surprise for anyone who does not need it.
     private var dropZoneEnabled: Bool {
         settings.moduleBool(id: info.id, key: Key.dropZone) ?? false
     }
 
-    private func poll() {
-        guard active else { return }
-        if dropZoneEnabled {
-            dropZone.tick()
-        } else if dropZone.isVisible {
-            dropZone.hide()
-        }
+    // The settings pane calls this instead of writing the setting directly,
+    // so a live toggle immediately reaches the shared drop-zone coordinator.
+    func setDropZoneEnabled(_ on: Bool) {
+        settings.setModuleBool(on, id: info.id, key: Key.dropZone)
+        if active { dropZoneCoordinator.setConvertActive(on) }
     }
 
     // MARK: - Triggers
@@ -302,8 +297,22 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
 
     // MARK: - Conversion
 
-    func convertFiles(_ urls: [URL]) {
-        let target = Self.currentTarget(settings: settings)
+    // `forcedTarget` comes from a specific "Convert to X" Finder service; nil
+    // means the caller (menu bar, Finder selection, open panel, drop zone,
+    // clipboard) takes the plan as Settings has it configured.
+    // Used by the "Convert to X" Finder services: everything but `kind` stays
+    // at whatever the user has configured.
+    func convertFiles(_ urls: [URL], overridingKind kind: ConvertPlan.MediaKind, rawValue: String) {
+        guard let target = ConvertPlan.Target.overriding(
+            kind: kind, rawValue: rawValue, base: Self.currentTarget(settings: settings)) else {
+            Log.error("convert: convert-to-format got unrecognized format \(rawValue) for kind \(kind.rawValue)")
+            return
+        }
+        convertFiles(urls, forcedTarget: target)
+    }
+
+    func convertFiles(_ urls: [URL], forcedTarget: ConvertPlan.Target? = nil) {
+        let target = forcedTarget ?? Self.currentTarget(settings: settings)
         Log.info("convert: converting \(urls.count) file(s), destination=\(target.destination.rawValue)")
         runTracked { [self] in
             beginWork()
@@ -749,10 +758,13 @@ private struct ConvertSettingsPane: View {
     @State private var showToast: Bool
     @State private var toastDuration: Double
     @State private var toastLocation: ConvertToastLocation
+    @State private var appDropTargeted = false
+    @ObservedObject var registry: ModuleRegistry
 
-    init(model: ConvertPaneModel, settings: Settings) {
+    init(model: ConvertPaneModel, settings: Settings, registry: ModuleRegistry) {
         self.model = model
         self.settings = settings
+        self.registry = registry
         let id = ModuleCatalog.convert.id
         _imageFormat = State(initialValue: settings.moduleString(id: id, key: ConvertModule.Key.imageFormat)
             .flatMap(ConvertPlan.ImageFormat.init) ?? .jpeg)
@@ -775,6 +787,7 @@ private struct ConvertSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            appDropTarget
             DSSettingsCard(title: "Images") {
                 optionRow("Target") {
                     ForEach(ConvertPlan.ImageFormat.allCases, id: \.rawValue) { value in
@@ -850,12 +863,12 @@ private struct ConvertSettingsPane: View {
                 }
                 DSToggleRow(
                     title: "Drop zone while dragging",
-                    caption: "A floating catcher appears at the bottom of the screen while you drag. Off by default since it shares Clop's spot on screen \u{2014} turn on only one at a time.",
+                    caption: "A floating catcher appears at the bottom of the screen while you drag. If Clop's drop zone is also on, the catcher splits so you can choose either one.",
                     isOn: Binding(
                         get: { dropZoneOn },
                         set: {
                             dropZoneOn = $0
-                            settings.setModuleBool($0, id: moduleID, key: ConvertModule.Key.dropZone)
+                            model.module?.setDropZoneEnabled($0)
                         }))
                 Text("Alongside writes \u{201C}name (converted)\u{201D} next to the original. Replace backs the original up first, then renames honestly: shot.png becomes shot.jpg. Files can also be dropped onto the menu bar icon.")
                     .font(.system(size: 11))
@@ -903,6 +916,21 @@ private struct ConvertSettingsPane: View {
             }
 
             DSSettingsCard(title: "Control") {
+                // Convert lives in the Apps tab, whose cards skip the usual
+                // ON/MENU toggle columns in favor of a one-click Open — these
+                // two rows are where that control lives instead.
+                DSToggleRow(
+                    title: "Enabled",
+                    caption: "Turns off hotkeys, Finder services, and the floating drop zone.",
+                    isOn: Binding(
+                        get: { registry.isEnabled(id: moduleID) },
+                        set: { registry.setEnabled($0, id: moduleID) }))
+                DSToggleRow(
+                    title: "Show in menu bar",
+                    caption: "Adds a menu bar icon you can drop files onto.",
+                    isOn: Binding(
+                        get: { registry.showsMenuBarItem(id: moduleID) },
+                        set: { model.module?.setShowsMenuBarItem($0) }))
                 HotkeyRecorderButton(
                     label: "Convert clipboard",
                     preset: settings.moduleHotkey(id: moduleID, defaultPreset: .disabled),
@@ -911,11 +939,74 @@ private struct ConvertSettingsPane: View {
                     label: "Convert Finder selection",
                     preset: model.module?.finderHotkey ?? .disabled,
                     onChange: { model.module?.updateFinderHotkey($0) })
-                Text("The Finder shortcut reads the current selection (macOS asks once to allow controlling Finder). Right-clicking files also offers Services > Convert with FreeKit.")
+                Text("The Finder shortcut reads the current selection (macOS asks once to allow controlling Finder). Right-clicking files also offers Services > Convert with FreeKit, plus a Convert to X entry for every format.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
             }
         }
+    }
+
+    // The Apps-tab entry point: opening Convert from there lands you straight
+    // on this pane, so dropping a file here (rather than only via the
+    // transient bottom-screen catcher or a hotkey) is the "drag files into
+    // the app" surface.
+    private var appDropTarget: some View {
+        DSSettingsCard(title: "Convert") {
+            HStack {
+                Spacer()
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.down.doc")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(appDropTargeted ? Color.dsAccent : Color.dsMuted)
+                    Text("Drop files here to convert")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.dsPaper)
+                    Text("Uses your configured formats below")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.dsFaint)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.dsInk2.opacity(0.4)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        appDropTargeted ? Color.dsAccent : Color.dsLine,
+                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
+            .animation(DS.animBase, value: appDropTargeted)
+            .onDrop(of: [.fileURL], isTargeted: $appDropTargeted) { providers in
+                handleDrop(providers)
+            }
+        }
+    }
+
+    // NSItemProvider loads run off-main and can complete on arbitrary
+    // threads; the lock guards `urls` until every provider has reported in,
+    // then the batch is handed to Convert on the main queue.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !providers.isEmpty else { return false }
+        let lock = NSLock()
+        var urls: [URL] = []
+        let group = DispatchGroup()
+        for provider in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                lock.lock()
+                urls.append(url)
+                lock.unlock()
+            }
+        }
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
+            model.module?.convertFiles(urls)
+        }
+        return true
     }
 
     private func setToastLocation(_ location: ConvertToastLocation) {
