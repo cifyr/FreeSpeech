@@ -109,7 +109,7 @@ final class SuiteDropZoneCoordinator {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .transient]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
 
         let container = NSView(frame: NSRect(origin: .zero, size: size))

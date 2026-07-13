@@ -96,7 +96,7 @@ enum ClopToast {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .transient]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentView = NSHostingView(rootView: ClopToastView(model: model))
         return panel

@@ -141,7 +141,7 @@ final class ShelfPanelController {
         // to a row's .onDrag, so pulling a file off the shelf would just slide
         // the whole panel. The header strip is the drag handle instead.
         panel.isMovableByWindowBackground = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .transient]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.appearance = NSAppearance(named: .darkAqua)
         let settings = self.settings
         let moduleID = self.moduleID

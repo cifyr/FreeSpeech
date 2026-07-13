@@ -321,8 +321,10 @@ final class NotebookPanelController {
     private func buildIfNeeded() {
         guard panel == nil else { return }
         let hosting = NSHostingController(rootView: NotebookView(model: model, config: config))
-        // A titled, floating panel: stays over normal windows for quick capture
-        // but never joins all Spaces or steals full-screen focus.
+        // A titled, floating panel: stays over normal windows for quick capture.
+        // fullScreenAuxiliary lets it also surface over another app's full-screen
+        // Space (e.g. jotting a note while a video plays full-screen) without the
+        // panel taking over or stealing that Space's full-screen focus itself.
         let p = NSPanel(contentViewController: hosting)
         p.styleMask = [.titled, .closable, .resizable, .utilityWindow, .fullSizeContentView]
         p.title = "Notebook"
@@ -331,6 +333,7 @@ final class NotebookPanelController {
         p.appearance = NSAppearance(named: .darkAqua)
         p.backgroundColor = DS.ink0
         p.level = config.floatOnTop ? .floating : .normal
+        p.collectionBehavior = config.floatOnTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : []
         p.hidesOnDeactivate = false
         p.isMovableByWindowBackground = true
         p.isReleasedWhenClosed = false
@@ -341,6 +344,7 @@ final class NotebookPanelController {
         panel = p
         floatCancellable = config.$floatOnTop.sink { [weak p] onTop in
             p?.level = onTop ? .floating : .normal
+            p?.collectionBehavior = onTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : []
         }
     }
 }
