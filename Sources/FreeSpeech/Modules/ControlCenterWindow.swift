@@ -101,6 +101,10 @@ struct ControlCenterView: View {
     }
 
     private static let appIDs = Set(ModuleCatalog.apps.map(\.id))
+    // Convert is cross-listed: it lives in Apps (its real home) but also gets
+    // a normal Tools card as a shortcut, since some of its controls (hotkeys,
+    // drop zone, Finder integration) read as Tools-tab settings.
+    private static let toolsProxyIDs: Set<String> = [ModuleCatalog.convert.id]
 
     private var visibleModules: [ModuleInfo] {
         registry.modules.map(\.info).filter { info in
@@ -108,7 +112,8 @@ struct ControlCenterView: View {
             case .apps:
                 return info.status == .available && Self.appIDs.contains(info.id)
             case .tools:
-                return info.status == .available && !Self.appIDs.contains(info.id)
+                return info.status == .available
+                    && (!Self.appIDs.contains(info.id) || Self.toolsProxyIDs.contains(info.id))
             case .roadmap:
                 return info.status == .comingSoon
             case .appearance:

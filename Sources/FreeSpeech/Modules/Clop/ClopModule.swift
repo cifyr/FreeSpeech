@@ -127,6 +127,9 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         dropZoneCoordinator.onClopDrop = { [weak self] urls in self?.optimizeFiles(urls, mode: .keepOriginal) }
         dropZoneCoordinator.setClopActive(dropZoneEnabled)
         startPollingIfNeeded()
+        // ownsMenuBarItem is false (no separate show/hide toggle), so the
+        // registry never calls setMenuBarItemVisible for us.
+        setMenuBarItemVisible(true)
         Log.info("clop: activated, watching clipboard")
     }
 
@@ -135,6 +138,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         stopPolling()
         dropZoneCoordinator.setClopActive(false)
         cancelAllWork()
+        setMenuBarItemVisible(false)
         if let hotkeyToken { hub.unregister(hotkeyToken) }
         hotkeyToken = nil
         if let finderHotkeyToken { hub.unregister(finderHotkeyToken) }

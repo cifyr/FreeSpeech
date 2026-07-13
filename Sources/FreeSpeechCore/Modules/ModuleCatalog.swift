@@ -76,10 +76,12 @@ public enum ModuleCatalog {
         summary: "Keep the Mac awake on demand: timed sessions and triggers instead of sleep.",
         symbolName: "pills", status: .comingSoon, ownsMenuBarItem: true)
 
+    // ownsMenuBarItem is false: there is no user-facing toggle for the menu
+    // bar icon anymore, it just self-manages, showing whenever Clop is on.
     public static let clop = ModuleInfo(
         id: "clop", displayName: "Clop",
         summary: "Automatic image, video, and PDF compression on copy.",
-        symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: true)
+        symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: false)
 
     // Local, client-side format conversion (images/video/audio/docs), the
     // CloudConvert/FreeConvert niche without the upload. Prior art: p2r3/convert.

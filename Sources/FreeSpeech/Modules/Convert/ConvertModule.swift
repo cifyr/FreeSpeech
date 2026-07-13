@@ -128,9 +128,9 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         paneModel.module = self
         dropZoneCoordinator.onConvertDrop = { [weak self] urls in self?.convertFiles(urls) }
         dropZoneCoordinator.setConvertActive(dropZoneEnabled)
-        // ownsMenuBarItem is false (Apps-tab modules self-manage), so the
-        // registry never calls setMenuBarItemVisible for us.
-        setMenuBarItemVisible(settings.moduleShowsMenuBarItem(id: info.id))
+        // ownsMenuBarItem is false: there is no separate show/hide toggle, it
+        // just self-manages, showing whenever Convert is on.
+        setMenuBarItemVisible(true)
         Log.info("convert: activated")
     }
 
@@ -144,14 +144,6 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         if let finderHotkeyToken { hub.unregister(finderHotkeyToken) }
         finderHotkeyToken = nil
         Log.info("convert: deactivated")
-    }
-
-    // The settings pane calls this instead of routing through the registry
-    // (which only drives ownsMenuBarItem modules): persist, then update the
-    // status item live if Convert is currently active.
-    func setShowsMenuBarItem(_ shows: Bool) {
-        settings.setModuleShowsMenuBarItem(shows, id: info.id)
-        if active { setMenuBarItemVisible(shows) }
     }
 
     func setMenuBarItemVisible(_ visible: Bool) {
@@ -916,21 +908,16 @@ private struct ConvertSettingsPane: View {
             }
 
             DSSettingsCard(title: "Control") {
-                // Convert lives in the Apps tab, whose cards skip the usual
-                // ON/MENU toggle columns in favor of a one-click Open — these
-                // two rows are where that control lives instead.
+                // Convert's Apps-tab card skips the usual ON toggle column in
+                // favor of a one-click Open; this row is where that control
+                // lives instead. There is no menu-bar-visibility toggle: the
+                // status item just self-manages, showing whenever Convert is on.
                 DSToggleRow(
                     title: "Enabled",
-                    caption: "Turns off hotkeys, Finder services, and the floating drop zone.",
+                    caption: "Turns off hotkeys, Finder services, the menu bar icon, and the floating drop zone.",
                     isOn: Binding(
                         get: { registry.isEnabled(id: moduleID) },
                         set: { registry.setEnabled($0, id: moduleID) }))
-                DSToggleRow(
-                    title: "Show in menu bar",
-                    caption: "Adds a menu bar icon you can drop files onto.",
-                    isOn: Binding(
-                        get: { registry.showsMenuBarItem(id: moduleID) },
-                        set: { model.module?.setShowsMenuBarItem($0) }))
                 HotkeyRecorderButton(
                     label: "Convert clipboard",
                     preset: settings.moduleHotkey(id: moduleID, defaultPreset: .disabled),
