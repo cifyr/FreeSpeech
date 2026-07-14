@@ -413,6 +413,7 @@ final class NotebookViewModel: ObservableObject {
         guard store.note(id: id) != nil else { return }
         selectedID = id
         reloadSelected()
+        armPeriodicSync(for: id)
     }
 
     // Re-sync the already-selected note when the panel is summoned again.
@@ -421,6 +422,7 @@ final class NotebookViewModel: ObservableObject {
         flushPendingSave()
         autoSyncOpen(id)
         reloadSelected()
+        armPeriodicSync(for: id)
     }
 
     private func reloadSelected() {
@@ -454,6 +456,7 @@ final class NotebookViewModel: ObservableObject {
         store.delete(id: id)
         if selectedID == id {
             selectedID = nil
+            disarmPeriodicSync()
             suppressTitleCallback = true
             editedTitle = ""
             suppressTitleCallback = false
@@ -521,50 +524,24 @@ final class NotebookViewModel: ObservableObject {
 
     // MARK: - Apple Notes sync
 
-    // FreeKit notes mirror into Apple Notes invisibly: opening a linked note
-    // pulls the Notes copy first, and leaving one (switching notes, hiding the
-    // panel, closing the window) pushes it back — creating its counterpart in
-    // Apple Notes' FreeKit folder on first close. Notes made outside FreeKit
-    // are never imported; unsynced local storage stays exactly as it was.
-    @Published var syncStatus: String?
-    @Published var syncNeedsAutomationGrant = false
-    // After an Automation denial the auto path stays quiet instead of
-    // re-failing on every open/close; a manual push re-arms it.
+    // FreeKit notes mirror into Apple Notes invisibly, with no button or
+    // status text anywhere in the UI: opening a linked note merges against its
+    // Notes copy, leaving one (switching notes, hiding the panel, closing the
+    // window) merges again, and a repeating timer merges the open note every
+    // periodicSyncInterval while it's being edited, so a save doesn't wait for
+    // a close to reach Apple Notes. "Merge" always keeps whichever side has
+    // more content rather than blindly overwriting, so an edit made directly
+    // in Notes.app (or a network hiccup) can't silently erase the other copy.
+    // A note earns its Apple Notes counterpart in the FreeKit folder on first
+    // close; notes made outside FreeKit are never imported.
+    private static let periodicSyncInterval: TimeInterval = 45
+    private var periodicSyncTimer: Timer?
+    // After an Automation denial the sync path stays quiet instead of
+    // re-failing on every timer tick and open/close.
     private var autoSyncSuspended = false
 
-    var selectedNoteHasAppleLink: Bool {
-        guard let id = selectedID else { return false }
-        return store.note(id: id)?.appleNoteID != nil
-    }
-
-    func pushToAppleNotes() {
-        flushPendingSave()
-        guard let id = selectedID, let note = store.note(id: id) else { return }
-        syncStatus = nil
-        syncNeedsAutomationGrant = false
-        autoSyncSuspended = false
-        if syncPush(note: note, quiet: false) {
-            syncStatus = "Saved to Apple Notes (FreeKit folder)."
-        }
-    }
-
-    func pullFromAppleNotes() {
-        flushPendingSave()
-        guard let id = selectedID, let note = store.note(id: id) else { return }
-        guard note.appleNoteID != nil else {
-            syncStatus = "No Apple Notes copy yet; one is created when you push or close this note."
-            return
-        }
-        syncStatus = nil
-        syncNeedsAutomationGrant = false
-        if syncPull(note: note, quiet: false) {
-            refresh()
-            reloadSelected()
-            syncStatus = "Pulled from Apple Notes."
-        }
-    }
-
     func autoSyncCloseSelected() {
+        disarmPeriodicSync()
         guard let id = selectedID else { return }
         autoSyncClose(id)
     }
@@ -575,20 +552,80 @@ final class NotebookViewModel: ObservableObject {
         let hasContent = !note.title.isEmpty
             || !note.plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard note.appleNoteID != nil || hasContent else { return }
-        syncPush(note: note, quiet: true)
+        syncMerge(id: id)
     }
 
     fileprivate func autoSyncOpen(_ id: UUID) {
         guard !autoSyncSuspended, let note = store.note(id: id),
               note.appleNoteID != nil else { return }
-        syncPull(note: note, quiet: true)
+        syncMerge(id: id)
+    }
+
+    private func armPeriodicSync(for id: UUID) {
+        periodicSyncTimer?.invalidate()
+        guard !autoSyncSuspended else { periodicSyncTimer = nil; return }
+        periodicSyncTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.periodicSyncInterval, repeats: true
+        ) { [weak self] _ in
+            self?.periodicSync(id)
+        }
+    }
+
+    private func disarmPeriodicSync() {
+        periodicSyncTimer?.invalidate()
+        periodicSyncTimer = nil
+    }
+
+    private func periodicSync(_ id: UUID) {
+        guard selectedID == id else { disarmPeriodicSync(); return }
+        flushPendingSave()
+        autoSyncClose(id)
+    }
+
+    // Reconciles the local note against its Apple Notes copy, keeping
+    // whichever side has more (trimmed) text and pushing that version to the
+    // other side so both converge instead of one clobbering the other.
+    private func syncMerge(id: UUID) {
+        guard let note = store.note(id: id) else { return }
+        guard let appleID = note.appleNoteID else {
+            syncPush(note: note)
+            return
+        }
+        switch Self.runAppleScript(AppleNotesScript.pull(id: appleID)) {
+        case .success(let descriptor):
+            guard let html = descriptor.stringValue,
+                  let (title, content) = Self.parsePulledHTML(html, config: config) else {
+                syncPush(note: note)
+                return
+            }
+            let remoteLength = content.string.trimmingCharacters(in: .whitespacesAndNewlines).count
+            let localLength = note.plainText.trimmingCharacters(in: .whitespacesAndNewlines).count
+            if remoteLength > localLength {
+                var updated = note
+                if !title.isEmpty { updated.title = String(title.prefix(60)) }
+                updated.plainText = content.string
+                updated.rich = content.rtf(
+                    from: NSRange(location: 0, length: content.length), documentAttributes: [:])
+                updated.modified = Date()
+                store.upsert(updated)
+                Log.info("notebook: adopted Apple Notes copy for \(note.id) (remote \(remoteLength) chars > local \(localLength))")
+                if selectedID == id {
+                    refresh()
+                    reloadSelected()
+                }
+            } else {
+                syncPush(note: note)
+            }
+        case .failure(let failure):
+            handleSyncFailure(failure, note: note, operation: "sync")
+        }
     }
 
     @discardableResult
-    private func syncPush(note: Note, quiet: Bool) -> Bool {
+    private func syncPush(note: Note) -> Bool {
         let html = Self.htmlForPush(note: note)
         let script = AppleNotesScript.push(htmlBody: html, existingID: note.appleNoteID)
-        Log.info("notebook: pushing note \(note.id) to Apple Notes (linked=\(note.appleNoteID != nil), quiet=\(quiet), htmlBytes=\(html.utf8.count))")
+        Log.info("notebook: pushing note \(note.id) to Apple Notes (linked=\(note.appleNoteID != nil), htmlBytes=\(html.utf8.count))")
         switch Self.runAppleScript(script) {
         case .success(let descriptor):
             var updated = store.note(id: note.id) ?? note
@@ -599,39 +636,12 @@ final class NotebookViewModel: ObservableObject {
             Log.info("notebook: pushed note \(note.id) -> Apple Notes id \(updated.appleNoteID ?? "?")")
             return true
         case .failure(let failure):
-            handleSyncFailure(failure, note: note, operation: "push", quiet: quiet)
+            handleSyncFailure(failure, note: note, operation: "push")
             return false
         }
     }
 
-    @discardableResult
-    private func syncPull(note: Note, quiet: Bool) -> Bool {
-        guard let appleID = note.appleNoteID else { return false }
-        Log.info("notebook: pulling note \(note.id) from Apple Notes id \(appleID) (quiet=\(quiet))")
-        switch Self.runAppleScript(AppleNotesScript.pull(id: appleID)) {
-        case .success(let descriptor):
-            guard let html = descriptor.stringValue,
-                  let (title, content) = Self.parsePulledHTML(html, config: config) else {
-                if !quiet { syncStatus = "Could not read the note back from Apple Notes." }
-                return false
-            }
-            var updated = store.note(id: note.id) ?? note
-            if !title.isEmpty { updated.title = String(title.prefix(60)) }
-            updated.plainText = content.string
-            updated.rich = content.rtf(
-                from: NSRange(location: 0, length: content.length), documentAttributes: [:])
-            updated.modified = Date()
-            store.upsert(updated)
-            Log.info("notebook: pulled note \(note.id) (\(content.length) chars)")
-            return true
-        case .failure(let failure):
-            handleSyncFailure(failure, note: note, operation: "pull", quiet: quiet)
-            return false
-        }
-    }
-
-    private func handleSyncFailure(_ failure: AppleScriptFailure, note: Note,
-                                   operation: String, quiet: Bool) {
+    private func handleSyncFailure(_ failure: AppleScriptFailure, note: Note, operation: String) {
         Log.error("notebook: Apple Notes \(operation) failed for \(note.id) (\(failure.code.map(String.init) ?? "?")): \(failure.message)")
         if failure.isMissingNote {
             // Deleted in Notes.app: unlink so the next close re-creates it
@@ -639,20 +649,13 @@ final class NotebookViewModel: ObservableObject {
             var updated = store.note(id: note.id) ?? note
             updated.appleNoteID = nil
             store.upsert(updated)
-            if !quiet {
-                syncStatus = "That note no longer exists in Apple Notes; it will be re-created on next save."
-            }
             return
         }
         if failure.isAutomationDenied {
             autoSyncSuspended = true
-            syncNeedsAutomationGrant = true
-            if !quiet {
-                syncStatus = "Allow FreeKit to control Notes in Privacy & Security > Automation."
-            }
-            return
+            disarmPeriodicSync()
+            Log.error("notebook: Apple Notes automation not permitted; pausing sync until FreeKit is relaunched or Automation access is granted in Privacy & Security")
         }
-        if !quiet { syncStatus = "Apple Notes \(operation) failed: \(failure.message)" }
     }
 
     struct AppleScriptFailure: Error {
@@ -830,7 +833,6 @@ struct NotebookView: View {
     @State private var showHighlights = false
     @State private var showSizes = false
     @State private var showOverflow = false
-    @State private var showSync = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -942,8 +944,8 @@ struct NotebookView: View {
     }
 
     private func visibleGroups(width: CGFloat) -> Set<ToolGroup> {
-        // Fixed occupants: padding, sidebar toggle, sync, gear, overflow button slot.
-        var budget = width - 28 - 34 - 34 - 34 - 34
+        // Fixed occupants: padding, sidebar toggle, gear, overflow button slot.
+        var budget = width - 28 - 34 - 34 - 34
         var kept: Set<ToolGroup> = []
         for group in ToolGroup.allCases.sorted(by: { $0.keepPriority < $1.keepPriority }) {
             if budget >= group.width {
@@ -972,8 +974,6 @@ struct NotebookView: View {
                         overflowPanel(groups: hidden)
                     }
             }
-            formatButton("arrow.triangle.2.circlepath", help: "Apple Notes sync") { showSync.toggle() }
-                .popover(isPresented: $showSync, arrowEdge: .bottom) { syncPanel }
             formatButton("gearshape", help: "Notebook settings") { model.openSettings() }
         }
         .padding(.horizontal, 14)
@@ -1008,58 +1008,6 @@ struct NotebookView: View {
         case .alignment:
             alignmentButtons
         }
-    }
-
-    // Explicit per-note sync with Apple Notes; nothing syncs on its own.
-    private var syncPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                model.pushToAppleNotes()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "icloud.and.arrow.up")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text(model.selectedNoteHasAppleLink
-                         ? "Update in Apple Notes" : "Send to Apple Notes")
-                }
-            }
-            .buttonStyle(GhostButtonStyle())
-            .disabled(model.selectedID == nil)
-            Button {
-                model.pullFromAppleNotes()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "icloud.and.arrow.down")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Pull from Apple Notes")
-                }
-            }
-            .buttonStyle(GhostButtonStyle())
-            .disabled(model.selectedID == nil)
-            if let status = model.syncStatus {
-                Text(status)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 240, alignment: .leading)
-            }
-            if model.syncNeedsAutomationGrant {
-                Button("Open Automation Settings") {
-                    if let url = URL(string:
-                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-                .buttonStyle(GhostButtonStyle())
-            }
-            Text("Notes sync with the FreeKit folder in Apple Notes on their own as you open and close them; these buttons just force it now. Notes made outside FreeKit are never imported.")
-                .font(.system(size: 10))
-                .foregroundStyle(Color.dsFaint)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 240, alignment: .leading)
-        }
-        .padding(12)
-        .background(Color.dsInk1)
     }
 
     // The overflow panel expands popover-style tools inline: nesting popovers

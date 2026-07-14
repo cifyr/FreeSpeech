@@ -26,6 +26,17 @@ enum BoringNotchCollapsedContent: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// The glanceable readouts eligible for the header strip's leading side. Exactly two show at
+/// a time — the strip beside the cutout is narrow, and two readouts is the most it can hold
+/// without crowding the app buttons on the other side.
+enum BoringNotchGlanceItem: String, CaseIterable, Identifiable {
+    case time = "Time"
+    case cpu = "CPU"
+    case memory = "Memory"
+    case battery = "Battery"
+    var id: String { rawValue }
+}
+
 /// How the calendar wing lays out upcoming events. List is the original two-line-per-event
 /// layout; Compact trades detail for count (more events, one line each); Agenda leads with a
 /// large "time until" readout for the very next event, the way a glance at a real notch app
@@ -59,10 +70,7 @@ final class BoringNotchPreferences: ObservableObject {
         static let calendarHours = "notch.calendarHours"
         static let calendarStyle = "notch.calendarStyle"
         static let hoverTolerance = "notch.hoverTolerance"
-        static let showClock = "notch.showClock"
-        static let showBattery = "notch.showBattery"
-        static let showStats = "notch.showStats"
-        static let showTimerButton = "notch.showTimerButton"
+        static let glanceItems = "notch.glanceItems"
         static let showMirrorButton = "notch.showMirrorButton"
         static let collapsedContent = "notch.collapsedContent"
         static let mediaWingLeading = "notch.mediaWingLeading"
@@ -87,13 +95,9 @@ final class BoringNotchPreferences: ObservableObject {
     }
     /// How far outside the closed cutout the pointer still counts as "on the notch". 0 = cutout only.
     @Published var hoverTolerance: Double { didSet { defaults.set(hoverTolerance, forKey: Key.hoverTolerance) } }
-    @Published var showClock: Bool { didSet { defaults.set(showClock, forKey: Key.showClock) } }
-    @Published var showBattery: Bool { didSet { defaults.set(showBattery, forKey: Key.showBattery) } }
-    // Off by default: a glance app's header strip is prime real estate, and CPU/memory is
-    // a deliberate opt-in, not something everyone wants competing with clock/battery.
-    @Published var showStats: Bool { didSet { defaults.set(showStats, forKey: Key.showStats) } }
-    @Published var showTimerButton: Bool {
-        didSet { defaults.set(showTimerButton, forKey: Key.showTimerButton) }
+    /// The (at most two) readouts on the header strip's leading side, in display order.
+    @Published var glanceItems: [BoringNotchGlanceItem] {
+        didSet { defaults.set(glanceItems.map(\.rawValue), forKey: Key.glanceItems) }
     }
     // Off by default: this gates a camera-permission prompt, so it should never fire
     // without the user explicitly opting in first.
@@ -124,10 +128,9 @@ final class BoringNotchPreferences: ObservableObject {
         calendarStyle = BoringNotchCalendarStyle(
             rawValue: defaults.string(forKey: Key.calendarStyle) ?? "") ?? .boring
         hoverTolerance = defaults.object(forKey: Key.hoverTolerance) as? Double ?? 0
-        showClock = defaults.object(forKey: Key.showClock) as? Bool ?? true
-        showBattery = defaults.object(forKey: Key.showBattery) as? Bool ?? true
-        showStats = defaults.object(forKey: Key.showStats) as? Bool ?? false
-        showTimerButton = defaults.object(forKey: Key.showTimerButton) as? Bool ?? false
+        let storedGlance = (defaults.stringArray(forKey: Key.glanceItems) ?? [])
+            .compactMap(BoringNotchGlanceItem.init(rawValue:))
+        glanceItems = storedGlance.isEmpty ? [.time, .battery] : Array(storedGlance.prefix(2))
         showMirrorButton = defaults.object(forKey: Key.showMirrorButton) as? Bool ?? false
         collapsedContent = BoringNotchCollapsedContent(
             rawValue: defaults.string(forKey: Key.collapsedContent) ?? "") ?? .nowPlaying
@@ -190,34 +193,6 @@ final class BoringStatsGlanceModel: ObservableObject {
     }
 }
 
-/// Quick countdown/Pomodoro timer, shown swapped in for the clock while running — a
-/// glance-friendly nudge without leaving the notch, matching Notchable's timer feature.
-final class BoringTimerModel: ObservableObject {
-    static let shared = BoringTimerModel()
-    @Published private(set) var remaining: TimeInterval?
-    private var timer: Timer?
-
-    func start(minutes: Double) {
-        remaining = minutes * 60
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
-    }
-    func cancel() {
-        timer?.invalidate()
-        timer = nil
-        remaining = nil
-    }
-    private func tick() {
-        guard let value = remaining else { return }
-        if value <= 1 {
-            cancel()
-            NSSound.beep()
-            return
-        }
-        remaining = value - 1
-    }
-}
-
 /// Quick front-camera preview — boringNotch's own headline "Quick Mirror" feature: a fast
 /// look before a call, without opening Photo Booth or FaceTime. The session only ever runs
 /// while the mirror is actually open, and stops the moment the notch collapses.
@@ -246,6 +221,9 @@ final class BoringMirrorModel: ObservableObject {
     }
 
     func stop() {
+        // Also clears a lingering denied banner so dismissing the mirror always
+        // returns the notch to its normal expanded layout.
+        authorizationDenied = false
         guard session.isRunning else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.session.stopRunning()
@@ -568,11 +546,18 @@ final class BoringNotchPanelState: ObservableObject {
     @Published var physicalNotchWidth: CGFloat = 0
     @Published var physicalNotchHeight: CGFloat = 0
     @Published var peeking = false
+    /// Mirror open (or its permission nudge showing): the expanded shape shrinks to hug
+    /// the camera preview instead of the full two-wing spread.
+    @Published var mirroring = false
     @Published var openSize: CGSize = .zero
     @Published var closedSize: CGSize = .zero
     @Published var peekSize: CGSize = .zero
+    @Published var mirrorSize: CGSize = .zero
 
-    var currentSize: CGSize { expanded ? openSize : (peeking ? peekSize : closedSize) }
+    var currentSize: CGSize {
+        if expanded { return mirroring ? mirrorSize : openSize }
+        return peeking ? peekSize : closedSize
+    }
 }
 
 enum NotchMetrics {
@@ -660,11 +645,11 @@ final class BoringNotchPanelController {
     private let calendar = BoringCalendarModel.shared
     private let battery = BoringBatteryModel.shared
     private let stats = BoringStatsGlanceModel.shared
-    private let timerModel = BoringTimerModel.shared
     private let mirror = BoringMirrorModel.shared
     private var subscriptions: Set<AnyCancellable> = []
     private var collapseWork: DispatchWorkItem?
     private var peekWork: DispatchWorkItem?
+    private var mirrorClickMonitors: [Any] = []
     private var isExpanded: Bool { state.expanded }
 
     init(preferences: BoringNotchPreferences, registry: ModuleRegistry) {
@@ -705,8 +690,10 @@ final class BoringNotchPanelController {
                 self.updateFrame(animated: true)
                 self.preferences.showMedia ? self.media.start() : self.media.stop()
                 self.preferences.showCalendar ? self.calendar.start() : self.calendar.stop()
-                self.preferences.showBattery ? self.battery.start() : self.battery.stop()
-                self.preferences.showStats ? self.stats.start() : self.stats.stop()
+                let glance = self.preferences.glanceItems
+                glance.contains(.battery) ? self.battery.start() : self.battery.stop()
+                glance.contains(.cpu) || glance.contains(.memory)
+                    ? self.stats.start() : self.stats.stop()
                 self.media.refresh()
                 self.calendar.refresh()
             }
@@ -721,18 +708,56 @@ final class BoringNotchPanelController {
         media.$item.compactMap { $0 }.map(\.identity).removeDuplicates()
             .sink { [weak self] _ in self?.showTrackPeek() }
             .store(in: &subscriptions)
+        // Mirror engagement (running, or showing its permission nudge) drives the shrink-to-
+        // camera shape and arms the click-anywhere-else dismissal.
+        mirror.$isRunning.combineLatest(mirror.$authorizationDenied)
+            .map { $0 || $1 }.removeDuplicates()
+            .sink { [weak self] engaged in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.state.mirroring = engaged
+                    self.updateFrame(animated: true)
+                    engaged ? self.installMirrorClickMonitors() : self.removeMirrorClickMonitors()
+                }
+            }
+            .store(in: &subscriptions)
+    }
+
+    /// Any click that isn't on the notch panel (the mirror itself) dismisses the mirror —
+    /// a global monitor catches clicks landing in other apps, a local one clicks on our
+    /// own other windows. Clicks on the panel pass through untouched.
+    private func installMirrorClickMonitors() {
+        removeMirrorClickMonitors()
+        if let global = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { [weak self] _ in self?.mirror.stop() }) {
+            mirrorClickMonitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { [weak self] event in
+                if let self, event.window !== self.panel { self.mirror.stop() }
+                return event
+            }) {
+            mirrorClickMonitors.append(local)
+        }
+    }
+    private func removeMirrorClickMonitors() {
+        mirrorClickMonitors.forEach(NSEvent.removeMonitor)
+        mirrorClickMonitors = []
     }
 
     func show() {
         updateFrame(animated: false); panel.orderFrontRegardless()
         if preferences.showMedia { media.start() }
         if preferences.showCalendar { calendar.start() }
-        if preferences.showBattery { battery.start() }
-        if preferences.showStats { stats.start() }
+        if preferences.glanceItems.contains(.battery) { battery.start() }
+        if preferences.glanceItems.contains(where: { $0 == .cpu || $0 == .memory }) { stats.start() }
     }
     func hide() {
         collapseWork?.cancel(); peekWork?.cancel()
-        media.stop(); calendar.stop(); battery.stop(); stats.stop(); timerModel.cancel(); mirror.stop()
+        media.stop(); calendar.stop(); battery.stop(); stats.stop(); mirror.stop()
+        removeMirrorClickMonitors()
         panel.orderOut(nil); coordinator.clearNotch()
     }
     private func setExpanded(_ expanded: Bool) {
@@ -760,7 +785,9 @@ final class BoringNotchPanelController {
         guard preferences.expandOnHover else { return }
         collapseWork?.cancel()
         if hovering { setExpanded(true) }
-        else if preferences.autoCollapse, !state.pinned {
+        // While the mirror is up, dismissal belongs to the click-away monitors — leaning
+        // back to look at yourself shouldn't collapse the panel out from under the camera.
+        else if preferences.autoCollapse, !state.pinned, !state.mirroring {
             let work = DispatchWorkItem { [weak self] in self?.setExpanded(false) }
             collapseWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + max(0.2, min(5, preferences.collapseDelay)),
@@ -805,6 +832,15 @@ final class BoringNotchPanelController {
                 : max(140, min(340, preferences.collapsedWidth)),
             height: closedHeight)
         state.peekSize = CGSize(width: min(openWidth, state.closedSize.width + 220), height: closedHeight)
+        // Mirror mode hugs the camera feed: same height as the open panel, but only as wide
+        // as a 4:3 preview (the built-in camera's aspect at the .medium preset) needs — never
+        // narrower than the physical cutout plus its flared shoulders.
+        let mirrorContentHeight = openHeight - closedHeight
+        state.mirrorSize = CGSize(
+            width: min(openWidth,
+                       max(notchWidth + 2 * NotchMetrics.openTopRadius,
+                           mirrorContentHeight * 4 / 3 + 24)),
+            height: openHeight)
 
         let pad = NotchMetrics.windowPadding
         let frame = NSRect(x: centerX - (openWidth + 2 * pad) / 2,
@@ -817,7 +853,7 @@ final class BoringNotchPanelController {
     /// The window is much larger than the visible shape, so report the shape's rect — not the
     /// window's — or every other overlay will route around empty space.
     private func publishNotchRect(screen: NSScreen, centerX: CGFloat) {
-        let size = isExpanded ? state.openSize : (state.peeking ? state.peekSize : state.closedSize)
+        let size = state.currentSize
         let rect = NSRect(x: centerX - size.width / 2, y: screen.frame.maxY - size.height,
                           width: size.width, height: size.height)
         coordinator.updateNotch(frame: rect, expanded: isExpanded)
@@ -831,7 +867,6 @@ struct BoringNotchPanelView: View {
     @ObservedObject var calendar: BoringCalendarModel
     @ObservedObject var battery = BoringBatteryModel.shared
     @ObservedObject var stats = BoringStatsGlanceModel.shared
-    @ObservedObject var timerModel = BoringTimerModel.shared
     @ObservedObject var mirror = BoringMirrorModel.shared
     let onToggle: () -> Void
     let onPin: () -> Void
@@ -1004,24 +1039,10 @@ struct BoringNotchPanelView: View {
     private var headerStrip: some View {
         HStack(spacing: 0) {
             Group {
-                // Clock leads the row so its left edge lines up with the media
-                // wing's artwork below (both sit at the same leading padding).
-                HStack(spacing: 10) {
-                    if preferences.showClock {
-                        TimelineView(.everyMinute) { context in
-                            Text(context.date, format: .dateTime.hour().minute())
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.white.opacity(0.85))
-                        }
-                    }
-                    if preferences.showTimerButton { timerControl }
-                    if preferences.showStats {
-                        HStack(spacing: 7) {
-                            statReadout(symbol: "cpu", fraction: stats.cpuUsage)
-                            statReadout(symbol: "memorychip", fraction: stats.memoryFraction)
-                        }
-                    }
-                    if preferences.showBattery { batteryReadout }
+                // The first readout leads the row so its left edge lines up with the
+                // media wing's artwork below (both sit at the same leading padding).
+                HStack(spacing: 12) {
+                    ForEach(preferences.glanceItems) { glanceReadout($0) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1041,17 +1062,32 @@ struct BoringNotchPanelView: View {
         }
         .frame(height: state.hasPhysicalNotch ? state.physicalNotchHeight : 22)
     }
+    @ViewBuilder
+    private func glanceReadout(_ item: BoringNotchGlanceItem) -> some View {
+        switch item {
+        case .time:
+            TimelineView(.everyMinute) { context in
+                Text(context.date, format: .dateTime.hour().minute())
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.85))
+            }
+        case .cpu: statReadout(symbol: "cpu", fraction: stats.cpuUsage)
+        case .memory: statReadout(symbol: "memorychip", fraction: stats.memoryFraction)
+        case .battery: batteryReadout
+        }
+    }
     private var batteryReadout: some View {
-        HStack(spacing: 5) {
-            Text("\(battery.percent)%")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(batteryTint)
+        HStack(spacing: 4) {
             Image(systemName: battery.charging ? "battery.100.bolt" : batterySymbol)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(batteryTint)
                 // Breathes while actually drawing wall power; a plugged-in laptop
                 // that's already full has nothing live to announce.
                 .dsLivePulse(battery.charging && battery.percent < 100)
+            Text("\(battery.percent)%")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(batteryTint)
         }
     }
     private var batterySymbol: String {
@@ -1070,51 +1106,41 @@ struct BoringNotchPanelView: View {
         if battery.percent <= 15 { return .orange }
         return Color.white.opacity(0.7)
     }
-    /// One glyph + percent, matching the battery readout's voice so CPU/Memory read as part
-    /// of the same strip rather than a bolted-on widget.
+    /// One glyph + percent in exactly the battery readout's voice (same sizes, same order,
+    /// monospaced digits so the value doesn't jitter as it updates every 2s).
     private func statReadout(symbol: String, fraction: Double) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 4) {
             Image(systemName: symbol)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.55))
             Text("\(Int((fraction * 100).rounded()))%")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.7))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white.opacity(0.75))
         }
-    }
-    /// A running timer replaces the icon with a live countdown (tap to cancel); idle, it's a
-    /// menu of common presets — no separate window, matching Notchable's inline timer.
-    @ViewBuilder
-    private var timerControl: some View {
-        if let remaining = timerModel.remaining {
-            Button { timerModel.cancel() } label: {
-                Text(Self.formatCountdown(remaining))
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.dsAccent)
-            }
-            .buttonStyle(.plain)
-            .help("Cancel timer")
-        } else {
-            Menu {
-                ForEach([5.0, 15.0, 25.0, 45.0], id: \.self) { minutes in
-                    Button("\(Int(minutes)) min") { timerModel.start(minutes: minutes) }
-                }
-            } label: {
-                Image(systemName: "timer")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.55))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Start a timer")
-        }
-    }
-    private static func formatCountdown(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded(.up))
-        return String(format: "%d:%02d", total / 60, total % 60)
     }
     private var expandedContent: some View {
+        Group {
+            if state.mirroring {
+                mirrorModeContent.transition(.dsCrossfade)
+            } else {
+                wingsContent.transition(.dsCrossfade)
+            }
+        }
+        .animation(DS.animCrossfade, value: state.mirroring)
+    }
+    /// Mirror mode: just the cutout strip and the camera preview beneath it — the panel
+    /// itself has already shrunk to hug the feed, so nothing else fits (or should).
+    private var mirrorModeContent: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: state.hasPhysicalNotch ? state.physicalNotchHeight : 22)
+            mirrorContent
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 10)
+        }
+    }
+    private var wingsContent: some View {
         VStack(spacing: 0) {
             // The physical cutout owns this strip; clock/stats/battery on the left and the
             // app-shortcut buttons on the right fill the space beside it, inset to the same
@@ -1122,11 +1148,7 @@ struct BoringNotchPanelView: View {
             headerStrip
                 .padding(.horizontal, NotchMetrics.openTopRadius + 16)
             HStack(alignment: .top, spacing: 18) {
-                if mirror.isRunning {
-                    // Mirror replaces both wings outright rather than fighting them for
-                    // space — you open it to look at yourself, not glance past a calendar.
-                    mirrorContent
-                } else if preferences.mediaWingLeading {
+                if preferences.mediaWingLeading {
                     // Each wing's content hugs whichever edge faces away from the divider, so
                     // swapping which side a wing sits on must also swap its own alignment —
                     // otherwise both wings cluster against the center divider instead of the
@@ -1154,9 +1176,9 @@ struct BoringNotchPanelView: View {
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.4))
-                .frame(width: 18, height: 16)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.45))
+                .frame(width: 19, height: 16)
         }
         .buttonStyle(.plain)
         .help(help)
@@ -1361,7 +1383,7 @@ struct BoringNotchPanelView: View {
     /// Upstream boring.notch's calendar, scaled to the wing: month/year block
     /// beside a small day picker, then colored-bar rows with start/end times.
     private var calendarBoringStyle: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(selectedCalendarDay.formatted(.dateTime.month(.abbreviated)))
@@ -1396,7 +1418,7 @@ struct BoringNotchPanelView: View {
                 .padding(.top, 2)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(events) { event in
                             boringEventRow(event)
                         }
@@ -1625,21 +1647,18 @@ struct BoringNotchSettingsPane: View {
                 }
             }
             DSSettingsCard(title: "Menu bar strip") {
-                DSToggleRow(title: "Show clock", isOn: $preferences.showClock)
-                DSToggleRow(title: "Show battery", isOn: $preferences.showBattery)
-                DSToggleRow(
-                    title: "Show CPU + Memory",
-                    caption: "A compact live glance, sampled every 2 seconds.",
-                    isOn: $preferences.showStats)
-                DSToggleRow(
-                    title: "Show quick timer",
-                    caption: "A timer icon next to the clock with common presets (5/15/25/45 min).",
-                    isOn: $preferences.showTimerButton)
+                Text("Two readouts sit left of the notch \u{2014} pick which two.")
+                    .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
+                HStack(spacing: 8) { ForEach(BoringNotchGlanceItem.allCases) { item in
+                    DSChip(title: item.rawValue, selected: preferences.glanceItems.contains(item)) {
+                        toggleGlanceItem(item)
+                    }
+                }}
             }
             DSSettingsCard(title: "Mirror") {
                 DSToggleRow(
                     title: "Show mirror button",
-                    caption: "A camera icon that swaps the notch to a quick front-camera preview \u{2014} handy before a call. Asks for Camera access the first time you open it, and the camera never runs unless the mirror is open.",
+                    caption: "A camera icon that shrinks the notch to a quick front-camera preview \u{2014} handy before a call. Click anywhere else to dismiss it. Asks for Camera access the first time, and the camera never runs unless the mirror is open.",
                     isOn: $preferences.showMirrorButton)
             }
             DSSettingsCard(title: "Behavior") {
@@ -1671,6 +1690,19 @@ struct BoringNotchSettingsPane: View {
             }
         }
     }
+    /// Picking a third readout bumps the oldest so the strip always holds exactly two;
+    /// deselecting stops at one so the strip never goes fully blank.
+    private func toggleGlanceItem(_ item: BoringNotchGlanceItem) {
+        var items = preferences.glanceItems
+        if let index = items.firstIndex(of: item) {
+            guard items.count > 1 else { return }
+            items.remove(at: index)
+        } else {
+            items.append(item)
+            if items.count > 2 { items.removeFirst() }
+        }
+        preferences.glanceItems = items
+    }
     private var calendarStyleCaption: String {
         switch preferences.calendarStyle {
         case .boring: return "Month, a small day picker, and each event's start and end times."
@@ -1695,14 +1727,14 @@ private struct BoringNotchPreview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Text("12:19")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.white.opacity(0.85))
-                    Text("85%").font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.85))
                     Image(systemName: "battery.75").font(.system(size: 10))
                         .foregroundStyle(Color.white.opacity(0.7))
+                    Text("85%").font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.85))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 NotchShape(topCornerRadius: 4, bottomCornerRadius: 7)
