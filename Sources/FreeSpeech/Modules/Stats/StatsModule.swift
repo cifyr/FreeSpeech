@@ -212,10 +212,6 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
 
     var settingsPopupSize: NSSize { NSSize(width: 640, height: 720) }
 
-    func openSettings() {
-        ControlCenterPresenter.shared.present(moduleID: info.id)
-    }
-
     func makeSettingsPane() -> AnyView {
         AnyView(StatsSettingsPane(settings: settings, onDisplayChange: { [weak self] in
             self?.applyMenuBarConfiguration()

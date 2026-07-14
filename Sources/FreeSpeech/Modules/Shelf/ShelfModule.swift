@@ -72,10 +72,6 @@ final class ShelfModule: NSObject, AppModule {
 
     var settingsPopupSize: NSSize { NSSize(width: 560, height: 480) }
 
-    func openSettings() {
-        ControlCenterPresenter.shared.present(moduleID: info.id)
-    }
-
     func makeSettingsPane() -> AnyView {
         paneModel.module = self
         return AnyView(ShelfSettingsPane(model: paneModel, settings: settings))

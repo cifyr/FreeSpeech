@@ -163,6 +163,12 @@ struct AppearanceBackground: View {
             }
         }
         .ignoresSafeArea()
+        // FreeKit windows no longer use isMovableByWindowBackground (AppKit's
+        // background drag fought slider/control gestures and moved the window
+        // mid-drag). Instead this shared background IS the drag surface:
+        // content in front (text, buttons, sliders) wins hit-testing, so only
+        // true empty-background drags move the window.
+        .gesture(WindowDragGesture())
     }
 }
 

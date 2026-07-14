@@ -313,6 +313,10 @@ extension View {
     }
 }
 
+// Historical belt-and-suspenders: with isMovableByWindowBackground now off on
+// every FreeKit window (the real fix — AppKit's background drag split events
+// with slider gestures and moved the window mid-drag, reproduced live), this
+// blocker only matters if some future window turns background-drag back on.
 private struct DSWindowDragBlocker: NSViewRepresentable {
     final class BlockerView: NSView {
         override var mouseDownCanMoveWindow: Bool { false }
@@ -397,6 +401,23 @@ enum DSMotionAppKit {
     static func resizeWindow(_ window: NSWindow, toContentSize size: NSSize) {
         let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         resizeWindow(window, toFrame: centeredFrame(size: frame.size, around: window.frame, on: window.screen))
+    }
+
+    // For frame changes that accompany a SwiftUI expand transition (the
+    // settings modal): timed and curved to land together with DS.animExpand's
+    // 0.34s critically damped settle. The default resizeWindow's 0.20s easeOut
+    // finished ahead of the card's spring, which read as a jump on open.
+    static func resizeWindowMatchingExpand(_ window: NSWindow, toContentSize size: NSSize) {
+        let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        let target = centeredFrame(size: frame.size, around: window.frame, on: window.screen)
+        guard !reduceMotion else { window.setFrame(target, display: true); return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.34
+            // Strong decelerate, close to a dampingFraction-1 spring's tail.
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+            ctx.allowsImplicitAnimation = true
+            window.animator().setFrame(target, display: true)
+        }
     }
 
     static func resizeWindow(_ window: NSWindow, toFrame frame: NSRect) {
