@@ -75,8 +75,8 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
         self.permissionCoach = permissionCoach
         super.init()
         let id = info.id
-        presentationCancellable = ControlCenterPresenter.shared.$presentedModuleID
-            .map { $0 == id }
+        presentationCancellable = ModuleWindowManager.shared.$visibleModuleIDs
+            .map { $0.contains(id) }
             .removeDuplicates()
             .sink { [weak self] visible in
                 self?.settingsWindowOpen = visible
@@ -144,11 +144,10 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
     // is false). Presence is derived in updateStatusIcon instead.
     func setMenuBarItemVisible(_ visible: Bool) {}
 
-    var settingsPopupSize: NSSize { NSSize(width: 640, height: 720) }
-
-    func openSettings() {
-        ControlCenterPresenter.shared.present(moduleID: info.id)
-    }
+    // Small popup-style window, sized like Notebook's floating panel; the
+    // cards scroll inside it.
+    var settingsPopupSize: NSSize { NSSize(width: 680, height: 460) }
+    var opensOwnWindow: Bool { true }
 
     func makeSettingsPane() -> AnyView {
         paneModel.module = self
@@ -202,6 +201,7 @@ final class AutoclickModule: NSObject, AppModule, NSMenuDelegate {
         // Synthetic events need Accessibility; usually granted already for the
         // shared tap, but the coach covers a fresh install.
         guard Permissions.accessibilityTrusted(promptIfNeeded: true) else {
+            Log.error("autoclick: start blocked — Accessibility not granted, showing permission coach")
             permissionCoach.show(.accessibility)
             return
         }
@@ -740,6 +740,17 @@ private struct AutoclickSettingsPane: View {
                         settings.setModuleDouble(value, id: moduleID, key: AutoclickModule.Key.maxDuration)
                     }
                 }
+                DSNumberField(
+                    placeholder: "sec",
+                    value: $maxDuration,
+                    range: 0...86_400,
+                    fractionDigits: 0,
+                    onCommit: {
+                        settings.setModuleDouble($0, id: moduleID, key: AutoclickModule.Key.maxDuration)
+                    })
+                Text("s")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsFaint)
                 Spacer()
             }
             HStack(spacing: 8) {

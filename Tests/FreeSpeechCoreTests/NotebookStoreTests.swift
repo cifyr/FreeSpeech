@@ -101,4 +101,54 @@ final class NotebookStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.count, 1)
         XCTAssertEqual(reloaded.notes().first?.title, "good")
     }
+
+    // MARK: - Apple Notes sync support
+
+    func testAppleNoteIDPersistsAndOldJSONStillDecodes() throws {
+        let store = NotebookStore(directory: directory)
+        var note = Note(title: "linked", plainText: "body")
+        note.appleNoteID = "x-coredata://ABC/ICNote/p42"
+        store.upsert(note)
+
+        let reloaded = NotebookStore(directory: directory)
+        XCTAssertEqual(reloaded.note(id: note.id)?.appleNoteID, "x-coredata://ABC/ICNote/p42")
+
+        // Pre-sync JSON (no appleNoteID key) must keep decoding.
+        let legacy = """
+        {"id":"\(UUID().uuidString)","title":"old","plainText":"t",
+         "modified":"2026-01-01T00:00:00Z"}
+        """
+        let url = directory.appendingPathComponent("legacy.json")
+        try legacy.data(using: .utf8)!.write(to: url)
+        let withLegacy = NotebookStore(directory: directory)
+        XCTAssertEqual(withLegacy.count, 2)
+        XCTAssertNil(withLegacy.notes().first { $0.title == "old" }?.appleNoteID)
+    }
+
+    func testAppleNotesScriptQuotingEscapesQuotesAndBackslashes() {
+        XCTAssertEqual(AppleNotesScript.quoted(#"say "hi" \now"#),
+                       #""say \"hi\" \\now""#)
+        XCTAssertEqual(AppleNotesScript.quoted(""), "\"\"")
+    }
+
+    func testAppleNotesPushScriptCreatesWhenUnlinkedAndUpdatesWhenLinked() {
+        let create = AppleNotesScript.push(htmlBody: "<div>x</div>", existingID: nil)
+        XCTAssertTrue(create.contains("make new note"))
+        XCTAssertTrue(create.contains("\"<div>x</div>\""))
+        XCTAssertTrue(create.contains("return id of theNote"))
+        // New notes land in FreeKit's own folder, created on demand.
+        XCTAssertTrue(create.contains("folder \"FreeKit\""))
+        XCTAssertTrue(create.contains("exists folder \"FreeKit\""))
+
+        let update = AppleNotesScript.push(htmlBody: "<div>y</div>", existingID: "note-1")
+        XCTAssertTrue(update.contains("note id \"note-1\""))
+        XCTAssertTrue(update.contains("set body of theNote"))
+        XCTAssertFalse(update.contains("make new note"))
+    }
+
+    func testAppleNotesPullScriptTargetsTheLinkedNote() {
+        let script = AppleNotesScript.pull(id: "note \"weird\" id")
+        XCTAssertTrue(script.contains(#"note id "note \"weird\" id""#))
+        XCTAssertTrue(script.contains("return body"))
+    }
 }

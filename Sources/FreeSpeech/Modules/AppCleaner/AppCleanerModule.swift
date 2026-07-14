@@ -16,8 +16,8 @@ final class AppCleanerModule: NSObject, AppModule {
         model = AppCleanerViewModel()
         super.init()
         let id = info.id
-        presentationCancellable = ControlCenterPresenter.shared.$presentedModuleID
-            .map { $0 == id }
+        presentationCancellable = ModuleWindowManager.shared.$visibleModuleIDs
+            .map { $0.contains(id) }
             .removeDuplicates()
             .sink { [weak self] visible in self?.setStatusItemVisible(visible) }
     }
@@ -52,9 +52,10 @@ final class AppCleanerModule: NSObject, AppModule {
 
     var settingsStyle: ModuleSettingsStyle { .popup }
     var settingsPopupSize: NSSize { NSSize(width: 820, height: 650) }
+    var opensOwnWindow: Bool { true }
     func makeSettingsPane() -> AnyView { AnyView(AppCleanerView(model: model, config: config)) }
     func openSettings() {
-        ControlCenterPresenter.shared.present(moduleID: info.id)
+        ModuleWindowManager.shared.open(self)
         if model.apps.isEmpty { model.scan(includeSystemApps: config.includeSystemApps) }
     }
 

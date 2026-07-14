@@ -9,7 +9,7 @@ enum EventTapError: LocalizedError {
     }
 }
 
-// A module that rewrites raw keyboard events (the Caps Lock remap). Runs before
+// A module that rewrites raw keyboard events (the HyperKey remap). Runs before
 // hotkey matching so remapped flags are what recognizers see.
 protocol EventRewriter: AnyObject {
     // May mutate the event in place; return .swallow to drop it entirely.
@@ -24,7 +24,7 @@ enum EventRewriteVerdict {
 // The suite's single active CGEventTap. One tap instead of one per hotkey: taps
 // are a scarce, failure-prone resource (macOS disables stalled ones), and
 // multiple active taps ordering against each other is undefined. All global
-// hotkeys and the Caps Lock remap funnel through here.
+// hotkeys and the HyperKey remap funnel through here.
 final class EventTapHub {
     final class HotkeyToken {
         fileprivate let recognizer: HotkeyRecognizer
@@ -141,7 +141,7 @@ final class EventTapHub {
         default: return false
         }
 
-        // Rewriters (the Caps Lock -> Hyper remap) must keep running even while
+        // Rewriters (the HyperKey Caps Lock -> Hyper remap) must keep running even while
         // a recorder is capturing: the recorder's local NSEvent monitor only
         // sees Hyper-key chords because this rewrite already folded the hold
         // flags in. Skipping it here made Hyper combos impossible to record.

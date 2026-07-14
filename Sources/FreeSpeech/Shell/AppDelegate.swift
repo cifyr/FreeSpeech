@@ -30,15 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.register(AutoclickModule(
             settings: settings, hub: eventHub, permissionCoach: permissionCoach))
         registry.register(StatsModule(settings: settings))
-        registry.register(CapsLockModule(settings: settings, hub: eventHub))
+        registry.register(HyperKeyModule(settings: settings, hub: eventHub))
         registry.register(AppCleanerModule(settings: settings))
         registry.register(BoringNotchModule(registry: registry))
         registry.register(ClopModule(settings: settings, hub: eventHub, dropZoneCoordinator: dropZoneCoordinator))
         registry.register(ShelfModule(settings: settings))
         registry.register(ConvertModule(
             settings: settings, hub: eventHub, registry: registry, dropZoneCoordinator: dropZoneCoordinator))
-        for info in [ModuleCatalog.cotypist, ModuleCatalog.linearMouse,
-                     ModuleCatalog.amphetamine] {
+        registry.register(AmphetamineModule(settings: settings))
+        for info in [ModuleCatalog.cotypist, ModuleCatalog.linearMouse, ModuleCatalog.ice] {
             registry.register(PlaceholderModule(info: info))
         }
 
@@ -84,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Deactivation matters beyond hygiene: the Caps Lock module must undo
+        // Deactivation matters beyond hygiene: the HyperKey module must undo
         // its hidutil remap or Caps Lock stays dead after quit.
         for module in registry.modules
         where module.info.status == .available && settings.moduleEnabled(id: module.info.id) {

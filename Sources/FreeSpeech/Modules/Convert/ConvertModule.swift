@@ -174,11 +174,14 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    var settingsPopupSize: NSSize { NSSize(width: 640, height: 760) }
+    // Small popup-style window, sized like Notebook's floating panel; the
+    // panes scroll inside it.
+    var settingsPopupSize: NSSize { NSSize(width: 680, height: 460) }
+    var opensOwnWindow: Bool { true }
 
     func openSettings() {
         landOnToolTabNextOpen = false
-        ControlCenterPresenter.shared.present(moduleID: info.id)
+        ModuleWindowManager.shared.open(self)
     }
 
     // Called instead of openSettings() when Convert is opened via its Tools
@@ -186,7 +189,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
     // as configuring the tool, so it should land on the Tool tab, not App.
     func openSettingsOnToolTab() {
         landOnToolTabNextOpen = true
-        ControlCenterPresenter.shared.present(moduleID: info.id)
+        ModuleWindowManager.shared.open(self)
     }
 
     func makeSettingsPane() -> AnyView {

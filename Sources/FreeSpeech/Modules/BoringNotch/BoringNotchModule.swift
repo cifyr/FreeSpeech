@@ -31,6 +31,9 @@ enum BoringNotchCollapsedContent: String, CaseIterable, Identifiable {
 /// large "time until" readout for the very next event, the way a glance at a real notch app
 /// (Notchable, NotchNook) tends to foreground urgency over a flat list.
 enum BoringNotchCalendarStyle: String, CaseIterable, Identifiable {
+    // Upstream TheBoredTeam/boring.notch look: month/year block, a small
+    // day picker, and colored-bar event rows with start/end times.
+    case boring = "Boring"
     case list = "List"
     case compact = "Compact"
     case agenda = "Agenda"
@@ -119,7 +122,7 @@ final class BoringNotchPreferences: ObservableObject {
         showCalendar = defaults.object(forKey: Key.showCalendar) as? Bool ?? true
         calendarHours = defaults.object(forKey: Key.calendarHours) as? Double ?? 24
         calendarStyle = BoringNotchCalendarStyle(
-            rawValue: defaults.string(forKey: Key.calendarStyle) ?? "") ?? .list
+            rawValue: defaults.string(forKey: Key.calendarStyle) ?? "") ?? .boring
         hoverTolerance = defaults.object(forKey: Key.hoverTolerance) as? Double ?? 0
         showClock = defaults.object(forKey: Key.showClock) as? Bool ?? true
         showBattery = defaults.object(forKey: Key.showBattery) as? Bool ?? true
@@ -480,6 +483,7 @@ struct BoringCalendarItem: Identifiable, Equatable {
     let id: String
     let title: String
     let startDate: Date
+    let endDate: Date
     let calendarName: String
     let color: NSColor
 }
@@ -519,12 +523,28 @@ final class BoringCalendarModel: ObservableObject {
             .filter { !$0.isAllDay && $0.endDate > now }
             .sorted { $0.startDate < $1.startDate }
             .prefix(5)
-        upcomingEvents = events.map {
-            BoringCalendarItem(id: $0.eventIdentifier ?? UUID().uuidString,
-                               title: $0.title ?? "Untitled Event", startDate: $0.startDate,
-                               calendarName: $0.calendar.title,
-                               color: NSColor(cgColor: $0.calendar.cgColor) ?? .systemMint)
-        }
+        upcomingEvents = events.map(Self.item(from:))
+    }
+
+    // Whole-day view for the Boring calendar style's day picker.
+    func events(on day: Date) -> [BoringCalendarItem] {
+        guard hasAccess else { return [] }
+        let cal = Foundation.Calendar.current
+        let start = cal.startOfDay(for: day)
+        guard let end = cal.date(byAdding: .day, value: 1, to: start) else { return [] }
+        return store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil))
+            .filter { !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(10)
+            .map(Self.item(from:))
+    }
+
+    private static func item(from event: EKEvent) -> BoringCalendarItem {
+        BoringCalendarItem(id: event.eventIdentifier ?? UUID().uuidString,
+                           title: event.title ?? "Untitled Event",
+                           startDate: event.startDate, endDate: event.endDate,
+                           calendarName: event.calendar.title,
+                           color: NSColor(cgColor: event.calendar.cgColor) ?? .systemMint)
     }
 }
 
@@ -667,7 +687,16 @@ final class BoringNotchPanelController {
             preferences: preferences, state: state, media: media, calendar: calendar,
             onToggle: { [weak self] in self?.setExpanded(!(self?.isExpanded ?? false)) },
             onPin: { [weak self] in self?.state.pinned.toggle() },
-            onHover: { [weak self] in self?.handleHover($0) }))
+            onHover: { [weak self] in self?.handleHover($0) },
+            // Same enable-on-demand behavior as the Apps tab's Open button, so
+            // a notch shortcut always works even for a not-yet-enabled tool.
+            onOpenModule: { [weak self] id in
+                guard let registry = self?.registry,
+                      let module = registry.module(id: id) else { return }
+                if !registry.isEnabled(id: id) { registry.setEnabled(true, id: id) }
+                module.openSettings()
+            },
+            onOpenTools: { ControlCenterPresenter.shared.present(section: .tools) }))
         hostingView.onDropFiles = { [weak self] urls, point in self?.handleDroppedFiles(urls, at: point) }
         panel.contentView = hostingView
         preferences.objectWillChange.sink { [weak self] _ in
@@ -807,6 +836,12 @@ struct BoringNotchPanelView: View {
     let onToggle: () -> Void
     let onPin: () -> Void
     let onHover: (Bool) -> Void
+    let onOpenModule: (String) -> Void
+    let onOpenTools: () -> Void
+    @State private var selectedCalendarDay = Date()
+    // The app-like tools worth one-tap access from the notch; kept short so
+    // the bottom row stays quieter than the media controls above it.
+    private static let appShortcuts: [ModuleInfo] = ModuleCatalog.apps
     private var shape: NotchShape {
         if state.expanded {
             return NotchShape(topCornerRadius: NotchMetrics.openTopRadius,
@@ -968,8 +1003,9 @@ struct BoringNotchPanelView: View {
     private var headerStrip: some View {
         HStack(spacing: 0) {
             Group {
+                // Clock leads the row so its left edge lines up with the media
+                // wing's artwork below (both sit at the same leading padding).
                 HStack(spacing: 8) {
-                    if preferences.showTimerButton { timerControl }
                     if preferences.showClock {
                         TimelineView(.everyMinute) { context in
                             Text(context.date, format: .dateTime.hour().minute())
@@ -977,6 +1013,7 @@ struct BoringNotchPanelView: View {
                                 .foregroundStyle(Color.white.opacity(0.85))
                         }
                     }
+                    if preferences.showTimerButton { timerControl }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1071,7 +1108,9 @@ struct BoringNotchPanelView: View {
     }
     private var expandedContent: some View {
         VStack(spacing: 0) {
-            // The physical cutout owns this strip; the clock and battery fill the space beside it.
+            // The physical cutout owns this strip; the clock and battery fill the space
+            // beside it, inset to the same edges as the wings so the clock's left
+            // aligns with the media artwork.
             headerStrip
                 .padding(.horizontal, NotchMetrics.openTopRadius + 16)
             HStack(alignment: .top, spacing: 18) {
@@ -1102,12 +1141,29 @@ struct BoringNotchPanelView: View {
             Spacer(minLength: 0)
         }
         .overlay(alignment: .bottom) {
-            Button(action: onPin) { Image(systemName: state.pinned ? "pin.fill" : "pin")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(state.pinned ? Color.dsAccent : Color.white.opacity(0.22))
-                .frame(width: 20, height: 14) }
-                .buttonStyle(.plain).help(state.pinned ? "Unpin Notch" : "Keep Notch Open")
+            // One quiet row: app shortcuts then the gear into Tools, lifted a
+            // few points off the shape's bottom curve.
+            HStack(spacing: 10) {
+                ForEach(Self.appShortcuts) { info in
+                    bottomBarButton(symbol: info.symbolName, help: "Open \(info.displayName)") {
+                        onOpenModule(info.id)
+                    }
+                }
+                bottomBarButton(symbol: "gearshape", help: "Open FreeKit Tools", action: onOpenTools)
+            }
+            .padding(.bottom, 6)
         }
+    }
+    private func bottomBarButton(symbol: String, help: String,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.22))
+                .frame(width: 20, height: 14)
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
     private func wing<V: View>(_ content: V, leading: Bool) -> some View {
         content.frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
@@ -1256,21 +1312,127 @@ struct BoringNotchPanelView: View {
         }.buttonStyle(.plain).help(help)
     }
     private var calendarWing: some View {
-        VStack(alignment: .trailing, spacing: 7) {
-            Text("UP NEXT")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .kerning(0.6)
-                .foregroundStyle(Color.white.opacity(0.28))
-            if calendar.upcomingEvents.isEmpty {
-                Text(calendar.hasAccess ? "Nothing upcoming" : "Calendar access off")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.4))
+        Group {
+            if preferences.calendarStyle == .boring {
+                calendarBoringStyle
             } else {
-                switch preferences.calendarStyle {
-                case .list: calendarListStyle
-                case .compact: calendarCompactStyle
-                case .agenda: calendarAgendaStyle
+                VStack(alignment: .trailing, spacing: 7) {
+                    Text("UP NEXT")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .kerning(0.6)
+                        .foregroundStyle(Color.white.opacity(0.28))
+                    if calendar.upcomingEvents.isEmpty {
+                        Text(calendar.hasAccess ? "Nothing upcoming" : "Calendar access off")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.white.opacity(0.4))
+                    } else {
+                        switch preferences.calendarStyle {
+                        case .boring: EmptyView()
+                        case .list: calendarListStyle
+                        case .compact: calendarCompactStyle
+                        case .agenda: calendarAgendaStyle
+                        }
+                    }
                 }
             }
+        }
+    }
+    /// Upstream boring.notch's calendar, scaled to the wing: month/year block
+    /// beside a small day picker, then colored-bar rows with start/end times.
+    private var calendarBoringStyle: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(selectedCalendarDay.formatted(.dateTime.month(.abbreviated)))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                    Text(selectedCalendarDay.formatted(.dateTime.year()))
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                }
+                calendarDayStrip
+            }
+            let events = calendar.events(on: selectedCalendarDay)
+            if !calendar.hasAccess {
+                Text("Calendar access off")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.4))
+            } else if events.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar.badge.checkmark")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(Foundation.Calendar.current.isDateInToday(selectedCalendarDay)
+                             ? "No events today" : "No events")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                        Text("Enjoy your free time!")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                    }
+                }
+                .padding(.top, 2)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(events) { event in
+                            boringEventRow(event)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var calendarDayStrip: some View {
+        HStack(spacing: 3) {
+            ForEach(-1..<4, id: \.self) { offset in
+                let cal = Foundation.Calendar.current
+                let date = cal.date(byAdding: .day, value: offset, to: cal.startOfDay(for: Date())) ?? Date()
+                let isSelected = cal.isDate(date, inSameDayAs: selectedCalendarDay)
+                let isToday = cal.isDateInToday(date)
+                Button {
+                    selectedCalendarDay = date
+                } label: {
+                    VStack(spacing: 2) {
+                        Text(date, format: .dateTime.weekday(.narrow))
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.55))
+                        ZStack {
+                            Circle()
+                                .fill(isToday ? Color.dsAccent : Color.clear)
+                                .frame(width: 15, height: 15)
+                            Text(date, format: .dateTime.day())
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(isSelected || isToday ? Color.white : Color.white.opacity(0.55))
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 3)
+                    .background(isSelected ? Color.white.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+    private func boringEventRow(_ event: BoringCalendarItem) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(Color(nsColor: event.color))
+                .frame(width: 3, height: 20)
+            Text(event.title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.white)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(event.startDate, format: .dateTime.hour().minute())
+                    .foregroundStyle(Color.white)
+                Text(event.endDate, format: .dateTime.hour().minute())
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
         }
     }
     /// Original two-line-per-event layout: title, then time + calendar name, with a colored
@@ -1484,6 +1646,7 @@ struct BoringNotchSettingsPane: View {
     }
     private var calendarStyleCaption: String {
         switch preferences.calendarStyle {
+        case .boring: return "Month, a small day picker, and each event's start and end times."
         case .list: return "Title, time, and calendar name for the next two events."
         case .compact: return "One line per event so more of the day fits at a glance."
         case .agenda: return "Leads with a countdown to the very next event."

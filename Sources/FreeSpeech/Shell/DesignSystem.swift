@@ -313,6 +313,10 @@ extension View {
     }
 }
 
+// Historical belt-and-suspenders: with isMovableByWindowBackground now off on
+// every FreeKit window (the real fix — AppKit's background drag split events
+// with slider gestures and moved the window mid-drag, reproduced live), this
+// blocker only matters if some future window turns background-drag back on.
 private struct DSWindowDragBlocker: NSViewRepresentable {
     final class BlockerView: NSView {
         override var mouseDownCanMoveWindow: Bool { false }

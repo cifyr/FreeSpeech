@@ -31,6 +31,11 @@ protocol AppModule: AnyObject {
     // (Speech's tabbed view predates the suite) — the popup then hosts the
     // pane edge to edge instead of wrapping it in the generic header.
     var popupUsesOwnChrome: Bool { get }
+    // App-like modules open their working UI in a dedicated window (see
+    // ModuleWindowManager) that outlives the Control Center hub; ambient
+    // tools keep the in-hub popup. Must be a protocol requirement so the
+    // default openSettings sees each conformer's value through the existential.
+    var opensOwnWindow: Bool { get }
     // Settings content: hosted in the popup (.popup) or inside the
     // control-center card (.inline).
     func makeSettingsPane() -> AnyView
@@ -41,9 +46,16 @@ extension AppModule {
     var settingsStyle: ModuleSettingsStyle { .popup }
     var settingsPopupSize: NSSize { NSSize(width: 560, height: 620) }
     var popupUsesOwnChrome: Bool { false }
-    // Default routes through the shared popup; only Control Center's own UI
-    // needs no override since it drives the popup directly.
-    func openSettings() { ControlCenterPresenter.shared.present(moduleID: info.id) }
+    var opensOwnWindow: Bool { false }
+    // Default routes to the module's own window or the shared popup; only
+    // Control Center's own UI needs no override since it drives the popup directly.
+    func openSettings() {
+        if opensOwnWindow {
+            ModuleWindowManager.shared.open(self)
+        } else {
+            ControlCenterPresenter.shared.present(moduleID: info.id)
+        }
+    }
 }
 
 // Coming-soon tools: real catalog entry, greyed-out card, zero runtime behavior.

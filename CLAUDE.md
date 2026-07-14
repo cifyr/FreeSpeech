@@ -31,7 +31,7 @@ metadata (id, display name, summary, icon, status) is `Sources/FreeSpeechCore/Mo
 | AppCleaner | Uninstall apps together with their leftover support files. | — (no extracted pure logic yet) |
 | Autoclick (Tap) | Fixed-interval clicks at the cursor or a set point; supports recorded macros. | `AutoclickPlan.swift`, `Macro.swift` |
 | Stats | Live CPU/memory/network/Bluetooth-battery in the menu bar. | `StatsFormatting.swift` |
-| CapsLock | Remap Caps Lock to a hyper key, Command, or tap-for-Escape. | `HyperKey.swift` |
+| HyperKey | Remap the Caps Lock key to a hyper key, Command, or tap-for-Escape. | `HyperKey.swift` |
 | Amphetamine, Cotypist, LinearMouse | Coming-soon placeholders (catalog entry + greyed card only, zero runtime). | `AmphetaminePlan.swift` (others: catalog entry only) |
 
 Adding a module or touching its logic? Start in its `Sources/FreeSpeech/Modules/<Name>/` folder —

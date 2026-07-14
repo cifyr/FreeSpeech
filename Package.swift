@@ -27,7 +27,8 @@ let package = Package(
                 "Modules/AppCleaner/README.md",
                 "Modules/Autoclick/README.md",
                 "Modules/Stats/README.md",
-                "Modules/CapsLock/README.md",
+                "Modules/HyperKey/README.md",
+                "Modules/Amphetamine/README.md",
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),

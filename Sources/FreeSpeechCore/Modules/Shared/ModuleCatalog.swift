@@ -51,9 +51,11 @@ public enum ModuleCatalog {
         summary: "Live CPU, memory, network throughput, and Bluetooth battery in the menu bar.",
         symbolName: "gauge.with.dots.needle.50percent", status: .available, ownsMenuBarItem: true)
 
-    public static let capsLock = ModuleInfo(
-        id: "capslock", displayName: "Caps Lock",
-        summary: "Remap Caps Lock to a hyper key, Command, or tap-for-Escape.",
+    // Display name is HyperKey; the persisted id stays "capslock" so existing
+    // installs keep their saved enabled/hotkey state across the rename.
+    public static let hyperKey = ModuleInfo(
+        id: "capslock", displayName: "HyperKey",
+        summary: "Remap the Caps Lock key to a hyper key, Command, or tap-for-Escape.",
         symbolName: "capslock", status: .available, ownsMenuBarItem: false)
 
     public static let cotypist = ModuleInfo(
@@ -71,10 +73,16 @@ public enum ModuleCatalog {
         summary: "Per-device pointer acceleration and scroll direction control.",
         symbolName: "computermouse", status: .comingSoon, ownsMenuBarItem: true)
 
+    // Menu-bar manager in the spirit of the Ice app.
+    public static let ice = ModuleInfo(
+        id: "ice", displayName: "Ice",
+        summary: "Menu bar manager: hide, show, and rearrange menu bar items.",
+        symbolName: "snowflake", status: .comingSoon, ownsMenuBarItem: true)
+
     public static let amphetamine = ModuleInfo(
         id: "amphetamine", displayName: "Amphetamine",
-        summary: "Keep the Mac awake on demand: timed sessions and triggers instead of sleep.",
-        symbolName: "pills", status: .comingSoon, ownsMenuBarItem: true)
+        summary: "Keep the Mac awake: timer tiers from the menu bar, or right-click to stay awake until you say stop.",
+        symbolName: "pills", status: .available, ownsMenuBarItem: true)
 
     // ownsMenuBarItem is false: there is no user-facing toggle for the menu
     // bar icon anymore, it just self-manages, showing whenever Clop is on.
@@ -106,8 +114,8 @@ public enum ModuleCatalog {
         symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
     public static let all: [ModuleInfo] = [
-        speech, notebook, autoclicker, stats, capsLock,
-        cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch, convert,
+        speech, notebook, autoclicker, stats, hyperKey,
+        cotypist, appCleaner, linearMouse, ice, amphetamine, clop, shelf, boringNotch, convert,
     ]
 
     // Tools that read as small apps rather than ambient utilities; the control

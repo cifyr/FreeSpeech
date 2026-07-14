@@ -126,6 +126,17 @@ struct DSNumberField: View {
             .onChange(of: value) { _, newValue in
                 if !focused { text = format(newValue) }
             }
+            // Commit valid in-range values as they are typed (without
+            // reformatting the text mid-edit): a run started by hotkey while
+            // the field still has focus must use the number on screen, not the
+            // last blurred value.
+            .onChange(of: text) { _, newText in
+                guard focused,
+                      let parsed = Double(newText.replacingOccurrences(of: ",", with: ".")),
+                      range.contains(parsed), parsed != value else { return }
+                value = parsed
+                onCommit(parsed)
+            }
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commit() }
             }

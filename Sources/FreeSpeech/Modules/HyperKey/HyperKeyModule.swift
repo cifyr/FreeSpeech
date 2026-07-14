@@ -2,15 +2,15 @@ import AppKit
 import SwiftUI
 import FreeSpeechCore
 
-// Caps Lock remap. Two layers: hidutil remaps Caps Lock -> F18 at the HID level
+// HyperKey: the Caps Lock key remap. Two layers: hidutil remaps Caps Lock -> F18 at the HID level
 // (a session event tap cannot observe caps press/release — the toggle happens
 // below it, and this also keeps the caps LED off), then the shared event tap
 // turns F18 into the configured behavior via HyperKeyMapper. The hidutil
 // mapping is session-scoped: it clears on deactivate/quit and does not survive
 // reboot, so activate() reapplies it. If the app crashes while enabled, Caps
 // Lock acts as F18 until relaunch or reboot.
-final class CapsLockModule: AppModule, EventRewriter {
-    let info = ModuleCatalog.capsLock
+final class HyperKeyModule: AppModule, EventRewriter {
+    let info = ModuleCatalog.hyperKey
 
     private let settings: Settings
     private let hub: EventTapHub
@@ -35,7 +35,7 @@ final class CapsLockModule: AppModule, EventRewriter {
     // Reads the composable config, migrating the first release's single
     // "behavior" string if that is all that exists.
     private static func loadConfig(settings: Settings) -> HyperKeyMapper.Config {
-        let id = ModuleCatalog.capsLock.id
+        let id = ModuleCatalog.hyperKey.id
         if let flags = settings.moduleInt(id: id, key: Key.holdFlags) {
             return HyperKeyMapper.Config(
                 holdFlags: UInt64(flags),
@@ -56,7 +56,7 @@ final class CapsLockModule: AppModule, EventRewriter {
         settings.setModuleInt(Int(config.holdFlags), id: info.id, key: Key.holdFlags)
         settings.setModuleBool(config.tapEmitsEscape, id: info.id, key: Key.tapEscape)
         mapper.reset(config: config)
-        Log.info("capslock: holdFlags=\(HotkeyModifiers(rawValue: config.holdFlags).symbols.isEmpty ? "none" : HotkeyModifiers(rawValue: config.holdFlags).symbols) tapEscape=\(config.tapEmitsEscape)")
+        Log.info("hyperkey: holdFlags=\(HotkeyModifiers(rawValue: config.holdFlags).symbols.isEmpty ? "none" : HotkeyModifiers(rawValue: config.holdFlags).symbols) tapEscape=\(config.tapEmitsEscape)")
     }
 
     func activate() {
@@ -71,12 +71,11 @@ final class CapsLockModule: AppModule, EventRewriter {
 
     func setMenuBarItemVisible(_ visible: Bool) {}
 
-    // A handful of checkboxes: stays inline in the control-center card instead
-    // of opening a whole window.
-    var settingsStyle: ModuleSettingsStyle { .inline }
+    var settingsStyle: ModuleSettingsStyle { .popup }
+    var opensOwnWindow: Bool { true }
 
     func makeSettingsPane() -> AnyView {
-        AnyView(CapsLockSettingsPane(
+        AnyView(HyperKeySettingsPane(
             initial: mapper.config,
             onChange: { [weak self] config in self?.saveConfig(config) }))
     }
@@ -112,7 +111,7 @@ final class CapsLockModule: AppModule, EventRewriter {
         let escape: CGKeyCode = 53
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: escape, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: escape, keyDown: false) else {
-            Log.error("capslock: failed to build Escape events")
+            Log.error("hyperkey: failed to build Escape events")
             return
         }
         down.post(tap: .cghidEventTap)
@@ -152,19 +151,19 @@ final class CapsLockModule: AppModule, EventRewriter {
                 let detail = String(
                     data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
                     encoding: .utf8) ?? ""
-                Log.error("capslock: hidutil (\(scope)) exited \(process.terminationStatus): \(detail)")
+                Log.error("hyperkey: hidutil (\(scope)) exited \(process.terminationStatus): \(detail)")
             } else {
-                Log.info("capslock: HID remap \(enabled ? "applied (Caps Lock -> F18)" : "cleared") [\(scope)]")
+                Log.info("hyperkey: HID remap \(enabled ? "applied (Caps Lock -> F18)" : "cleared") [\(scope)]")
             }
         } catch {
-            Log.error("capslock: failed to run hidutil: \(error.localizedDescription)")
+            Log.error("hyperkey: failed to run hidutil: \(error.localizedDescription)")
         }
     }
 }
 
 // Compose any modifier mix for the hold behavior; presets are shortcuts that
 // set the same checkboxes.
-private struct CapsLockSettingsPane: View {
+private struct HyperKeySettingsPane: View {
     @State private var holdFlags: UInt64
     @State private var tapEscape: Bool
     let onChange: (HyperKeyMapper.Config) -> Void

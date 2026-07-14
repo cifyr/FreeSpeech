@@ -11,6 +11,9 @@ import FreeSpeechCore
 final class ControlCenterPresenter: ObservableObject {
     static let shared = ControlCenterPresenter()
     @Published private(set) var presentedModuleID: String?
+    // One-shot request for the hub to land on a specific tab (the notch gear
+    // opens Tools); consumed and cleared by ControlCenterView.
+    @Published var requestedSection: ControlCenterSection?
     fileprivate var showControlCenter: (() -> Void)?
 
     private init() {}
@@ -20,9 +23,21 @@ final class ControlCenterPresenter: ObservableObject {
         presentedModuleID = moduleID
     }
 
+    func present(section: ControlCenterSection) {
+        showControlCenter?()
+        requestedSection = section
+    }
+
     func dismiss() {
         presentedModuleID = nil
     }
+}
+
+enum ControlCenterSection: String, CaseIterable {
+    case apps = "Apps"
+    case tools = "Tools"
+    case appearance = "Appearance"
+    case roadmap = "Roadmap"
 }
 
 final class ControlCenterWindowController {
@@ -49,8 +64,10 @@ final class ControlCenterWindowController {
             w.backgroundColor = DS.ink0
             w.minSize = NSSize(width: 560, height: 480)
             w.setContentSize(NSSize(width: 600, height: 720))
-            // Hidden titlebar leaves nothing to grab; drag anywhere instead.
-            w.isMovableByWindowBackground = true
+            // Dragging is explicit: the (invisible) titlebar strip plus the
+            // WindowDragGesture on AppearanceBackground. Background-drag is off
+            // because AppKit's version fought slider/control gestures.
+            w.isMovableByWindowBackground = false
             w.isReleasedWhenClosed = false
             w.center()
             window = w
@@ -91,14 +108,7 @@ struct ControlCenterView: View {
     @ObservedObject private var appearance = AppearanceManager.shared
     @ObservedObject private var presenter = ControlCenterPresenter.shared
     @State private var expandedID: String?
-    @State private var selectedSection: Section = .apps
-
-    private enum Section: String, CaseIterable {
-        case apps = "Apps"
-        case tools = "Tools"
-        case appearance = "Appearance"
-        case roadmap = "Roadmap"
-    }
+    @State private var selectedSection: ControlCenterSection = .apps
 
     private static let appIDs = Set(ModuleCatalog.apps.map(\.id))
     // Convert is cross-listed: it lives in Apps (its real home) but also gets
@@ -130,6 +140,14 @@ struct ControlCenterView: View {
             }
         }
         .animation(DS.animExpand(), value: presenter.presentedModuleID)
+        .onReceive(presenter.$requestedSection) { section in
+            guard let section else { return }
+            withAnimation(DS.animCrossfade) {
+                selectedSection = section
+                expandedID = nil
+            }
+            presenter.requestedSection = nil
+        }
     }
 
     @ViewBuilder
@@ -172,7 +190,7 @@ struct ControlCenterView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Color.dsMuted)
                 HStack(spacing: 22) {
-                    ForEach(Section.allCases, id: \.self) { section in
+                    ForEach(ControlCenterSection.allCases, id: \.self) { section in
                         DSTabButton(
                             title: section.rawValue,
                             selected: selectedSection == section

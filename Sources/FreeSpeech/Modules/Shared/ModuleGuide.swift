@@ -63,11 +63,17 @@ enum ModuleGuides {
             .init(icon: "eye", title: "Pick what shows",
                   detail: "Choose which readouts appear and how often they refresh."),
         ]),
-        ModuleCatalog.capsLock.id: ModuleGuide(steps: [
-            .init(icon: "capslock", title: "Reclaim Caps Lock",
-                  detail: "Remap it to a hyper key, Command, or tap-for-Escape; hold and tap can do different things."),
+        ModuleCatalog.hyperKey.id: ModuleGuide(steps: [
+            .init(icon: "capslock", title: "Your HyperKey",
+                  detail: "Remap the Caps Lock key to a hyper key, Command, or tap-for-Escape; hold and tap can do different things."),
             .init(icon: "keyboard.badge.ellipsis", title: "Pick the modifiers",
                   detail: "Choose exactly which modifiers the hold sends, so it fits your shortcuts."),
+        ]),
+        ModuleCatalog.amphetamine.id: ModuleGuide(steps: [
+            .init(icon: "pills", title: "Stay awake on demand",
+                  detail: "Pick a timer from the menu bar icon, or right-click it to hold the Mac awake until you right-click again."),
+            .init(icon: "laptopcomputer", title: "One thing it can't do",
+                  detail: "Closing the lid with no external display always sleeps the Mac; that veto belongs to macOS, not apps."),
         ]),
         ModuleCatalog.boringNotch.id: ModuleGuide(steps: [
             .init(icon: "sparkles.rectangle.stack", title: "Beside the notch",
