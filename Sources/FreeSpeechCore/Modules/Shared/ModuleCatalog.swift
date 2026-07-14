@@ -56,6 +56,13 @@ public enum ModuleCatalog {
         summary: "Remap Caps Lock to a hyper key, Command, or tap-for-Escape.",
         symbolName: "capslock", status: .available, ownsMenuBarItem: false)
 
+    // Menu-bar manager in the spirit of the Ice app: hide/show other apps'
+    // menu bar icons, plus a live view of every FreeKit tool's own icon.
+    public static let ice = ModuleInfo(
+        id: "ice", displayName: "Ice",
+        summary: "Menu bar manager: hide and show other apps' menu bar icons, and FreeKit's own.",
+        symbolName: "snowflake", status: .available, ownsMenuBarItem: true)
+
     public static let cotypist = ModuleInfo(
         id: "cotypist", displayName: "Cotypist",
         summary: "On-device inline text prediction anywhere you type.",
@@ -106,7 +113,7 @@ public enum ModuleCatalog {
         symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
     public static let all: [ModuleInfo] = [
-        speech, notebook, autoclicker, stats, capsLock,
+        speech, notebook, autoclicker, stats, capsLock, ice,
         cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch, convert,
     ]
 
