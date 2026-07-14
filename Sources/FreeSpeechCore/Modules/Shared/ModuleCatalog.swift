@@ -58,6 +58,13 @@ public enum ModuleCatalog {
         summary: "Remap the Caps Lock key to a hyper key, Command, or tap-for-Escape.",
         symbolName: "capslock", status: .available, ownsMenuBarItem: false)
 
+    // Menu-bar manager in the spirit of the Ice app: hide/show other apps'
+    // menu bar icons, plus a live view of every FreeKit tool's own icon.
+    public static let ice = ModuleInfo(
+        id: "ice", displayName: "Ice",
+        summary: "Menu bar manager: hide and show other apps' menu bar icons, and FreeKit's own.",
+        symbolName: "snowflake", status: .available, ownsMenuBarItem: true)
+
     public static let cotypist = ModuleInfo(
         id: "cotypist", displayName: "Cotypist",
         summary: "On-device inline text prediction anywhere you type.",
@@ -72,12 +79,6 @@ public enum ModuleCatalog {
         id: "linearmouse", displayName: "LinearMouse",
         summary: "Per-device pointer acceleration and scroll direction control.",
         symbolName: "computermouse", status: .comingSoon, ownsMenuBarItem: true)
-
-    // Menu-bar manager in the spirit of the Ice app.
-    public static let ice = ModuleInfo(
-        id: "ice", displayName: "Ice",
-        summary: "Menu bar manager: hide, show, and rearrange menu bar items.",
-        symbolName: "snowflake", status: .comingSoon, ownsMenuBarItem: true)
 
     public static let amphetamine = ModuleInfo(
         id: "amphetamine", displayName: "Amphetamine",
@@ -114,8 +115,8 @@ public enum ModuleCatalog {
         symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
     public static let all: [ModuleInfo] = [
-        speech, notebook, autoclicker, stats, hyperKey,
-        cotypist, appCleaner, linearMouse, ice, amphetamine, clop, shelf, boringNotch, convert,
+        speech, notebook, autoclicker, stats, hyperKey, ice,
+        cotypist, appCleaner, linearMouse, amphetamine, clop, shelf, boringNotch, convert,
     ]
 
     // Tools that read as small apps rather than ambient utilities; the control
