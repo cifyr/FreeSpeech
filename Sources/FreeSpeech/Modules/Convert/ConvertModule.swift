@@ -128,9 +128,8 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
         paneModel.module = self
         dropZoneCoordinator.onConvertDrop = { [weak self] urls in self?.convertFiles(urls) }
         dropZoneCoordinator.setConvertActive(dropZoneEnabled)
-        // ownsMenuBarItem is false: there is no separate show/hide toggle, it
-        // just self-manages, showing whenever Convert is on.
-        setMenuBarItemVisible(true)
+        // ownsMenuBarItem is true: the registry drives setMenuBarItemVisible from
+        // the MENU checkbox right after this, so don't force the item on here.
         Log.info("convert: activated")
     }
 

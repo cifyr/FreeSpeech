@@ -127,9 +127,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         dropZoneCoordinator.onClopDrop = { [weak self] urls in self?.optimizeFiles(urls, mode: .keepOriginal) }
         dropZoneCoordinator.setClopActive(dropZoneEnabled)
         startPollingIfNeeded()
-        // ownsMenuBarItem is false (no separate show/hide toggle), so the
-        // registry never calls setMenuBarItemVisible for us.
-        setMenuBarItemVisible(true)
+        // ownsMenuBarItem is true: the registry drives setMenuBarItemVisible from
+        // the MENU checkbox right after this, so don't force the item on here.
         Log.info("clop: activated, watching clipboard")
     }
 

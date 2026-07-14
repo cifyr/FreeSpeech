@@ -104,17 +104,17 @@ public enum ModuleCatalog {
     public static let clop = ModuleInfo(
         id: "clop", displayName: "Clop",
         summary: "Automatic image, video, and PDF compression on copy.",
-        symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: false)
+        symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: true)
 
     // Local, client-side format conversion (images/video/audio/docs), the
     // CloudConvert/FreeConvert niche without the upload. Prior art: p2r3/convert.
-    // ownsMenuBarItem is false because it lives in the Apps tab: like every
-    // other app-style tool it self-manages its own status item rather than
-    // having the registry drive it.
+    // ownsMenuBarItem is true so the registry drives its persistent menu bar item
+    // and its Tools-tab card gets the MENU show/hide checkbox — even though it is
+    // also cross-listed in the Apps tab (see ModuleCatalog.apps).
     public static let convert = ModuleInfo(
         id: "convert", displayName: "Convert",
         summary: "Drag-and-drop file conversion between image, audio, video, and document formats, done on-device.",
-        symbolName: "arrow.triangle.2.circlepath", status: .available, ownsMenuBarItem: false)
+        symbolName: "arrow.triangle.2.circlepath", status: .available, ownsMenuBarItem: true)
 
     // The shelf is summoned by the shake gesture, not from the menu bar.
     public static let shelf = ModuleInfo(

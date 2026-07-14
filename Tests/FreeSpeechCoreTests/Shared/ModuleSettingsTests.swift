@@ -34,7 +34,12 @@ final class ModuleSettingsTests: XCTestCase {
         for info in ModuleCatalog.apps {
             XCTAssertEqual(info.status, .available, "\(info.id) must be available")
             XCTAssertTrue(ModuleCatalog.all.contains(info), "\(info.id) missing from catalog")
-            XCTAssertFalse(info.ownsMenuBarItem, "\(info.id) must self-manage its menu bar item")
+            // App-style tools show their status item only while open, so the
+            // registry must not drive it — except Convert, which is cross-listed
+            // into Tools and keeps a persistent, MENU-toggleable item.
+            if info.id != ModuleCatalog.convert.id {
+                XCTAssertFalse(info.ownsMenuBarItem, "\(info.id) must self-manage its menu bar item")
+            }
         }
     }
 
