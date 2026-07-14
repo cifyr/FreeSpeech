@@ -25,7 +25,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .disk: return "Disk"
             case .battery: return "Battery"
             case .system: return "Uptime and load"
-            case .bluetooth: return "Bluetooth battery"
+            case .bluetooth: return "Device battery"
             }
         }
 
@@ -354,7 +354,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             let cores = max(1, ProcessInfo.processInfo.activeProcessorCount)
             return min(1, snapshot.loadAverages.0 / Double(cores))
         case .bluetooth:
-            return sampler.bluetoothBatteries().map(\.percent).min()
+            return sampler.deviceBatteries().map(\.percent).min()
                 .map { Double($0) / 100 }
         }
     }
@@ -402,7 +402,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         case (.system, _):
             return String(format: "%.2f", snapshot.loadAverages.0)
         case (.bluetooth, _):
-            let lowest = sampler.bluetoothBatteries().map(\.percent).min()
+            let lowest = sampler.deviceBatteries().map(\.percent).min()
             return lowest.map { "\($0)%" } ?? "\u{2014}"
         }
     }
@@ -580,7 +580,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             return rows
         case .bluetooth:
             guard showsRow(kind, "devices") else { return [] }
-            let devices = sampler.bluetoothBatteries()
+            let devices = sampler.deviceBatteries()
             return devices.isEmpty
                 ? [("No devices reporting battery", "")]
                 : devices.map { ($0.name, StatsFormatting.percent(Double($0.percent) / 100)) }
@@ -631,7 +631,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
 
 private final class StatsPreviewModel: ObservableObject {
     @Published private(set) var snapshot: StatsSnapshot
-    @Published private(set) var bluetooth: [BluetoothBattery]
+    @Published private(set) var devices: [DeviceBattery]
     private let sampler: StatsSampler
     private var timer: Timer?
 
@@ -640,7 +640,7 @@ private final class StatsPreviewModel: ObservableObject {
         sampler.sample()
         self.sampler = sampler
         snapshot = sampler.sample()
-        bluetooth = sampler.bluetoothBatteries()
+        devices = sampler.deviceBatteries()
     }
 
     func start(every interval: Double) {
@@ -660,7 +660,7 @@ private final class StatsPreviewModel: ObservableObject {
 
     private func sample() {
         snapshot = sampler.sample()
-        bluetooth = sampler.bluetoothBatteries()
+        devices = sampler.deviceBatteries()
     }
 }
 
@@ -732,15 +732,20 @@ private struct StatsSettingsPane: View {
                 if let battery = preview.snapshot.batteryPercent {
                     previewValue("Battery", "\(battery)%", "battery.100percent")
                 }
-                previewValue("Bluetooth", preview.bluetooth.isEmpty ? "No battery data" : "\(preview.bluetooth.count) devices", "wave.3.right")
+                previewValue("Devices", preview.devices.isEmpty ? "No battery data" : "\(preview.devices.count) devices", "wave.3.right")
             }
         }
 
-        if !preview.bluetooth.isEmpty {
-            DSSettingsCard(title: "Bluetooth battery") {
+        if !preview.devices.isEmpty {
+            DSSettingsCard(title: "Device battery") {
                 VStack(alignment: .leading, spacing: 11) {
-                    ForEach(preview.bluetooth, id: \.name) { device in
+                    ForEach(preview.devices, id: \.name) { device in
+                        let isLow = StatsFormatting.isLowDeviceBattery(device.percent)
                         HStack(spacing: 10) {
+                            Image(systemName: StatsFormatting.deviceIconSymbolName(for: device.name))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(isLow ? Color.dsAccent : Color.dsMuted)
+                                .frame(width: 16)
                             Text(device.name)
                                 .font(.system(size: 12.5))
                                 .foregroundStyle(Color.dsMuted)
@@ -749,14 +754,14 @@ private struct StatsSettingsPane: View {
                             GeometryReader { geo in
                                 ZStack(alignment: .leading) {
                                     Capsule().fill(Color.white.opacity(0.07))
-                                    Capsule().fill(Color.dsMuted)
+                                    Capsule().fill(isLow ? Color.dsAccent : Color.dsMuted)
                                         .frame(width: geo.size.width * CGFloat(device.percent) / 100)
                                 }
                             }
                             .frame(width: 64, height: 5)
                             Text("\(device.percent)%")
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Color.dsPaper)
+                                .foregroundStyle(isLow ? Color.dsAccent : Color.dsPaper)
                                 .frame(width: 34, alignment: .trailing)
                         }
                     }
@@ -1144,11 +1149,6 @@ struct StatsSnapshot {
     var batteryCycleCount: Int?
 }
 
-struct BluetoothBattery {
-    let name: String
-    let percent: Int
-}
-
 final class StatsSampler {
     private var lastCPUTicks: (busy: UInt64, total: UInt64)?
     private var lastPerCoreTicks: [(busy: UInt64, total: UInt64)] = []
@@ -1463,12 +1463,38 @@ final class StatsSampler {
         return (received, sent)
     }
 
+    // Bluetooth (IOKit) is a synchronous registry scan, cheap enough to call on every
+    // sample. iPhone/iPad/Watch battery (IDeviceBatteryReader) goes through
+    // lockdownd/companion_proxy over the network, which can take seconds per device —
+    // far too slow to run on Stats' own sample cadence (as low as every 0.5s). That
+    // scan instead runs on a background queue on its own throttled interval, and this
+    // just merges in whatever it last found; deviceBatteries() itself always returns
+    // immediately.
+    private static let appleDeviceScanInterval: CFAbsoluteTime = 30
+    private var cachedAppleDeviceBatteries: [DeviceBattery] = []
+    private var lastAppleDeviceScan: CFAbsoluteTime = 0
+    private var scanningAppleDevices = false
+
+    func deviceBatteries() -> [DeviceBattery] {
+        let now = CFAbsoluteTimeGetCurrent()
+        if !scanningAppleDevices, now - lastAppleDeviceScan > Self.appleDeviceScanInterval {
+            scanningAppleDevices = true
+            lastAppleDeviceScan = now
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let found = IDeviceBatteryReader.read()
+                DispatchQueue.main.async {
+                    self?.cachedAppleDeviceBatteries = found
+                    self?.scanningAppleDevices = false
+                }
+            }
+        }
+        return StatsFormatting.sortedDeviceBatteries(bluetoothAccessoryBatteries() + cachedAppleDeviceBatteries)
+    }
+
     // Battery levels surface in the IORegistry for HID-over-Bluetooth devices
-    // (Magic keyboards/mice/trackpads, many headphones). There is no public API
-    // for other iCloud devices' batteries — if one ever appears, plug it in
-    // here alongside the HID scan.
-    func bluetoothBatteries() -> [BluetoothBattery] {
-        var results: [BluetoothBattery] = []
+    // (Magic keyboards/mice/trackpads, many headphones).
+    private func bluetoothAccessoryBatteries() -> [DeviceBattery] {
+        var results: [DeviceBattery] = []
         var iterator: io_iterator_t = 0
         let matching = IOServiceMatching("AppleDeviceManagementHIDEventService")
         let result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
@@ -1481,9 +1507,9 @@ final class StatsSampler {
             defer { IOObjectRelease(service) }
             guard let percent = registryProperty(service, "BatteryPercent") as? Int else { continue }
             let name = (registryProperty(service, "Product") as? String) ?? "Bluetooth device"
-            results.append(BluetoothBattery(name: name, percent: percent))
+            results.append(DeviceBattery(name: name, percent: percent))
         }
-        return results.sorted { $0.name < $1.name }
+        return results
     }
 
     private func registryProperty(_ service: io_object_t, _ key: String) -> Any? {
