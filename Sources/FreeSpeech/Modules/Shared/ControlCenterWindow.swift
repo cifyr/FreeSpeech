@@ -80,19 +80,22 @@ final class ControlCenterWindowController {
         Log.info("control center opened")
     }
 
-    // Grows the window to fit the popup (never shrinks below whatever size it
-    // already was) and restores the exact pre-popup frame once it closes.
+    // Snaps the window to the popup's own size — shrinking as well as growing,
+    // so a short modal isn't stranded in a tall hub — and restores the exact
+    // pre-popup frame once it closes.
     private func resizeForPresentedModule(_ id: String?) {
         guard let window else { return }
         if let id, let module = registry.module(id: id) {
             if preSettingsFrame == nil { preSettingsFrame = window.frame }
-            let current = window.contentRect(forFrameRect: window.frame).size
             let ideal = module.settingsPopupSize
+            let screen = window.screen?.visibleFrame.size
+                ?? NSSize(width: CGFloat.greatestFiniteMagnitude,
+                          height: CGFloat.greatestFiniteMagnitude)
             // Popup card floats with a 32pt gutter on every side (see
             // ModuleSettingsCard) so the host window needs that much extra room.
             let target = NSSize(
-                width: max(current.width, ideal.width + 64),
-                height: max(current.height, ideal.height + 64))
+                width: min(max(ideal.width + 64, window.minSize.width), screen.width),
+                height: min(max(ideal.height + 64, window.minSize.height), screen.height))
             DSMotionAppKit.resizeWindow(window, toContentSize: target)
         } else if let restore = preSettingsFrame {
             DSMotionAppKit.resizeWindow(window, toFrame: restore)
