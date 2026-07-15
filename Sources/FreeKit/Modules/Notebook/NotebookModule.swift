@@ -278,7 +278,7 @@ final class NotebookConfig: ObservableObject {
 
     init(settings: Settings) {
         self.settings = settings
-        fontSize = settings.moduleDouble(id: id, key: "fontSize") ?? 13
+        fontSize = settings.moduleDouble(id: id, key: "fontSize") ?? 17
         fontFamily = settings.moduleString(id: id, key: "fontFamily")
             .flatMap(NotebookFont.init) ?? .system
         // Sidebar starts hidden; it's summoned from the in-app toolbar.
@@ -992,10 +992,10 @@ struct NotebookView: View {
                     TextField("Untitled", text: $model.editedTitle)
                         .textFieldStyle(.plain)
                         .multilineTextAlignment(.center)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 19, weight: .semibold))
                         .foregroundStyle(NB.inkC)
                         .padding(.horizontal, 72)
-                        .padding(.top, 5)
+                        .padding(.top, 1)
                         .padding(.bottom, 6)
                     RichTextEditor(model: model, proxy: editor)
                     Rectangle().fill(NB.hairlineC).frame(height: 1)
