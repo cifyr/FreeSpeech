@@ -63,12 +63,24 @@ final class SuiteDropZoneCoordinator {
         let dragPasteboard = NSPasteboard(name: .drag)
         if dragPasteboard.changeCount != lastDragChangeCount {
             lastDragChangeCount = dragPasteboard.changeCount
-            if NSEvent.pressedMouseButtons != 0 {
+            if NSEvent.pressedMouseButtons != 0, hasHandleableDrag(dragPasteboard) {
                 show()
             }
         }
         if isVisible, NSEvent.pressedMouseButtons == 0 {
             hide()
+        }
+    }
+
+    // The panel only earns its place if at least one dragged file is something
+    // an active tool can actually process; a drag of folders, apps, disk
+    // images, or otherwise-unsupported files leaves it hidden.
+    private func hasHandleableDrag(_ pasteboard: NSPasteboard) -> Bool {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.contains { url in
+            (clopActive && SuiteDropTargetKind.clop.accepts(url)) ||
+            (convertActive && SuiteDropTargetKind.convert.accepts(url))
         }
     }
 
@@ -158,10 +170,22 @@ private enum SuiteDropTargetKind {
     }
 
     func accepts(_ url: URL) -> Bool {
+        guard !SuiteDropTargetKind.isPlainDirectory(url) else { return false }
         switch self {
         case .clop: return ClopOptimizer.mediaType(forFileExtension: url.pathExtension) != nil
         case .convert: return ConvertPlan.mediaKind(forFileExtension: url.pathExtension) != nil
         }
+    }
+
+    // Rejects folders (even ones renamed with a media extension) up front;
+    // real bundles that happen to be a supported type — e.g. .rtfd — are
+    // packages, so they pass through to the extension check. .app/.dmg have no
+    // supported extension and fall out there.
+    private static func isPlainDirectory(_ url: URL) -> Bool {
+        if let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) {
+            return values.isDirectory == true && values.isPackage != true
+        }
+        return url.hasDirectoryPath
     }
 }
 

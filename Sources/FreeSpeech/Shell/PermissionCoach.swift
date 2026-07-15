@@ -24,9 +24,18 @@ enum CoachPermission {
         case .microphone:
             return "Flip the switch next to FreeKit in the Microphone list."
         case .accessibility:
-            return "Flip the switch next to FreeKit in the list. Not listed? Click + at the bottom and pick FreeKit from Applications."
+            return "Flip the switch next to FreeKit. Not listed? Drag the icon below into the list, or click + and pick FreeKit."
         case .screenRecording:
-            return "Flip the switch next to FreeKit in the list. macOS may ask to quit and reopen the app."
+            return "Flip the switch next to FreeKit. Not listed? Drag the icon below into the list. macOS may ask to quit and reopen."
+        }
+    }
+
+    // Only the Accessibility / Screen-Recording panes present a draggable app
+    // list; mic/camera are a plain allow toggle with no + button to drag into.
+    var usesDragList: Bool {
+        switch self {
+        case .accessibility, .screenRecording: return true
+        case .microphone: return false
         }
     }
 
@@ -57,7 +66,7 @@ final class PermissionCoachController {
         init(permission: CoachPermission) { self.permission = permission }
     }
 
-    private static let panelSize = CGSize(width: 340, height: 96)
+    private static let panelSize = CGSize(width: 340, height: 120)
     private static let settingsBundleID = "com.apple.systempreferences"
 
     private var panel: NSPanel?
@@ -203,8 +212,19 @@ private struct PermissionCoachView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().frame(width: 28, height: 28)
+                if state.permission.usesDragList {
+                    VStack(spacing: 4) {
+                        DraggableAppIcon()
+                            .frame(width: 34, height: 34)
+                        Text("Drag me into the list ↑")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Color.dsMuted)
+                            .fixedSize()
+                    }
+                } else {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable().frame(width: 28, height: 28)
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(state.permission.title)
                         .font(.system(size: 13, weight: .semibold))
@@ -223,11 +243,43 @@ private struct PermissionCoachView: View {
             .buttonStyle(.plain)
         }
         .padding(14)
-        .frame(width: 340, height: 96, alignment: .top)
+        .frame(width: 340, height: 120, alignment: .top)
         .background(Color(nsColor: DS.glass),
                     in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous)
             .strokeBorder(Color.dsLine, lineWidth: 1))
         .animation(DS.animCrossfade, value: state.granted)
     }
+}
+
+// The app icon as a Finder-style drag source: dragging it vends the running
+// FreeKit.app's bundle URL as a file URL, which the System Settings
+// Accessibility / Screen-Recording list accepts straight in — same as dragging
+// the app from Finder onto the list, so the user skips the + / file picker.
+private final class DraggableAppIconView: NSView, NSDraggingSource {
+    private let icon = NSApp.applicationIconImage
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 34, height: 34) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        icon?.draw(in: bounds)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let item = NSDraggingItem(pasteboardWriter: Bundle.main.bundleURL as NSURL)
+        item.setDraggingFrame(bounds, contents: icon)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .outsideApplication ? .copy : []
+    }
+}
+
+private struct DraggableAppIcon: NSViewRepresentable {
+    func makeNSView(context: Context) -> DraggableAppIconView { DraggableAppIconView() }
+    func updateNSView(_ nsView: DraggableAppIconView, context: Context) {}
 }

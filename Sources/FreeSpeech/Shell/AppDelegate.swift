@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry: ModuleRegistry!
     private var speech: SpeechModule!
     private var controlCenter: ControlCenterWindowController!
+    private var suiteOnboarding: SuiteOnboardingWindowController!
     private var serviceBridge: SuiteServiceBridge!
 
     private var accessibilityPollTimer: Timer?
@@ -49,18 +50,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // No suite menu bar item: the Dock icon is the door into FreeKit now.
         controlCenter = ControlCenterWindowController(registry: registry)
+        suiteOnboarding = SuiteOnboardingWindowController(
+            registry: registry, settings: settings, permissionCoach: permissionCoach,
+            onFinished: { [weak self] in self?.finishSuiteOnboarding() })
 
         registry.activateEnabledModules()
         installEventTapOrPollForAccessibility()
 
         // Opening the app by hand means "show me FreeKit"; a login-item launch
-        // stays silent and just starts whatever tools are enabled. First-run
-        // onboarding keeps the stage to itself.
-        let onboardingWillShow = settings.moduleEnabled(id: ModuleCatalog.speech.id)
-            && !settings.hasCompletedOnboarding
-        if !Self.launchedAsLoginItem(), !onboardingWillShow {
-            controlCenter.show()
+        // stays silent and just starts whatever tools are enabled. First run
+        // shows the suite onboarding instead of the Control Center; it keeps the
+        // stage to itself and hands off when the user finishes.
+        if !Self.launchedAsLoginItem() {
+            if settings.hasCompletedSuiteOnboarding {
+                controlCenter.show()
+            } else {
+                suiteOnboarding.show()
+            }
         }
+    }
+
+    // Suite onboarding closed: surface the Control Center, wake the shared event
+    // tap now that the flow (not us) is done owning the permission UX, and let a
+    // Speech enabled during setup run its own guided onboarding on top.
+    private func finishSuiteOnboarding() {
+        controlCenter.show()
+        installEventTapOrPollForAccessibility()
+        speech.showOnboardingIfNeeded()
     }
 
     // Re-opening the running app (Finder, Dock, `open`) surfaces the control
@@ -97,8 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Shared event tap lifecycle
 
     private func installEventTapOrPollForAccessibility() {
-        // During onboarding the setup window owns the permission UX, so stay quiet here.
-        let onboarded = settings.hasCompletedOnboarding
+        // During the suite onboarding the setup window owns the permission UX, so stay quiet here.
+        let onboarded = settings.hasCompletedSuiteOnboarding
         if Permissions.accessibilityTrusted(promptIfNeeded: onboarded) {
             startEventTap(promptForAccessibility: false)
             return

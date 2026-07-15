@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 import FreeSpeechCore
 
 // Notebook: a floating note panel toggled by a global hotkey. Notes persist as
@@ -213,15 +214,17 @@ final class NotebookConfig: ObservableObject {
         fontSize = settings.moduleDouble(id: id, key: "fontSize") ?? 13
         fontFamily = settings.moduleString(id: id, key: "fontFamily")
             .flatMap(NotebookFont.init) ?? .system
-        sidebarVisible = settings.moduleBool(id: id, key: "sidebarVisible") ?? true
+        // Sidebar starts hidden; it's summoned from the in-app toolbar.
+        sidebarVisible = settings.moduleBool(id: id, key: "sidebarVisible") ?? false
         floatOnTop = settings.moduleBool(id: id, key: "floatOnTop") ?? true
         sidebarWidth = min(max(settings.moduleDouble(id: id, key: "sidebarWidth") ?? 210, 180), 300)
-        listDensity = settings.moduleString(id: id, key: "listDensity")
-            .flatMap(NotebookListDensity.init) ?? .comfortable
         sortOrder = settings.moduleString(id: id, key: "sortOrder")
             .flatMap(NotebookSortOrder.init) ?? .modified
-        showTimestamps = settings.moduleBool(id: id, key: "showTimestamps") ?? true
-        showPreviews = settings.moduleBool(id: id, key: "showPreviews") ?? true
+        // Previews, timestamps, and comfortable density are always on now — no
+        // longer exposed as settings — so they're fixed rather than read back.
+        listDensity = .comfortable
+        showTimestamps = true
+        showPreviews = true
         spellCheck = settings.moduleBool(id: id, key: "spellCheck") ?? true
         smartQuotes = settings.moduleBool(id: id, key: "smartQuotes") ?? true
     }
@@ -498,8 +501,7 @@ final class NotebookViewModel: ObservableObject {
         guard let id = saved?.id ?? selectedID, var note = store.note(id: id) else { return }
         if let (_, text) = saved {
             note.plainText = text.string
-            note.rich = text.rtf(
-                from: NSRange(location: 0, length: text.length), documentAttributes: [:])
+            note.rich = NotebookRichText.data(from: text)
         }
         // Explicit header wins; an empty header falls back to the first line.
         let typed = editedTitle.trimmingCharacters(in: .whitespaces)
@@ -516,7 +518,7 @@ final class NotebookViewModel: ObservableObject {
 
     private func attributedText(from note: Note) -> NSAttributedString {
         if let rich = note.rich,
-           let text = NSAttributedString(rtf: rich, documentAttributes: nil) {
+           let text = NotebookRichText.attributedString(from: rich) {
             return text
         }
         return NSAttributedString(string: note.plainText, attributes: config.bodyAttributes)
@@ -529,9 +531,10 @@ final class NotebookViewModel: ObservableObject {
     // Notes copy, leaving one (switching notes, hiding the panel, closing the
     // window) merges again, and a repeating timer merges the open note every
     // periodicSyncInterval while it's being edited, so a save doesn't wait for
-    // a close to reach Apple Notes. "Merge" always keeps whichever side has
-    // more content rather than blindly overwriting, so an edit made directly
-    // in Notes.app (or a network hiccup) can't silently erase the other copy.
+    // a close to reach Apple Notes. "Merge" keeps whichever side was edited most
+    // recently rather than blindly overwriting — so an edit in Notes.app carries
+    // over, but a deletion made in FreeKit isn't undone by the (longer) stale
+    // Notes copy the way an earlier "more content wins" rule did.
     // A note earns its Apple Notes counterpart in the FreeKit folder on first
     // close; notes made outside FreeKit are never imported.
     private static let periodicSyncInterval: TimeInterval = 45
@@ -591,24 +594,28 @@ final class NotebookViewModel: ObservableObject {
             syncPush(note: note)
             return
         }
-        switch Self.runAppleScript(AppleNotesScript.pull(id: appleID)) {
+        switch Self.runAppleScript(AppleNotesScript.pullWithModified(id: appleID)) {
         case .success(let descriptor):
-            guard let html = descriptor.stringValue,
+            // The script returns {body, modification date}; a list descriptor is
+            // 1-indexed. Fall back to a plain push if it isn't shaped as expected.
+            guard descriptor.numberOfItems >= 2,
+                  let html = descriptor.atIndex(1)?.stringValue,
+                  let remoteModified = descriptor.atIndex(2)?.dateValue,
                   let (title, content) = Self.parsePulledHTML(html, config: config) else {
                 syncPush(note: note)
                 return
             }
-            let remoteLength = content.string.trimmingCharacters(in: .whitespacesAndNewlines).count
-            let localLength = note.plainText.trimmingCharacters(in: .whitespacesAndNewlines).count
-            if remoteLength > localLength {
+            // Most-recently-edited side wins. The epsilon absorbs the second or
+            // two between our own push and Notes stamping it, so a note we just
+            // pushed doesn't read as "remote is newer" and get adopted back.
+            if remoteModified > note.modified.addingTimeInterval(2) {
                 var updated = note
                 if !title.isEmpty { updated.title = String(title.prefix(60)) }
                 updated.plainText = content.string
-                updated.rich = content.rtf(
-                    from: NSRange(location: 0, length: content.length), documentAttributes: [:])
-                updated.modified = Date()
+                updated.rich = NotebookRichText.data(from: content)
+                updated.modified = remoteModified
                 store.upsert(updated)
-                Log.info("notebook: adopted Apple Notes copy for \(note.id) (remote \(remoteLength) chars > local \(localLength))")
+                Log.info("notebook: adopted Apple Notes copy for \(note.id) (remote modified \(remoteModified) > local \(note.modified))")
                 if selectedID == id {
                     refresh()
                     reloadSelected()
@@ -632,6 +639,11 @@ final class NotebookViewModel: ObservableObject {
             if let newID = descriptor.stringValue, !newID.isEmpty {
                 updated.appleNoteID = newID
             }
+            // Notes stamps its own modification date to now on this write; match
+            // it locally so the next merge sees the two copies as even (recency
+            // tie) and pushes/does nothing rather than adopting the round-tripped
+            // remote back over the local original.
+            updated.modified = Date()
             store.upsert(updated)
             Log.info("notebook: pushed note \(note.id) -> Apple Notes id \(updated.appleNoteID ?? "?")")
             return true
@@ -688,7 +700,7 @@ final class NotebookViewModel: ObservableObject {
     // Title becomes the body's first (heading) line — Notes derives the note
     // name from it — followed by the content, exported together as HTML.
     private static func htmlForPush(note: Note) -> String {
-        let content = note.rich.flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
+        let content = note.rich.flatMap { NotebookRichText.attributedString(from: $0) }
             ?? NSAttributedString(string: note.plainText)
         let combined = NSMutableAttributedString()
         let title = note.title.isEmpty ? "Untitled" : note.title
@@ -947,8 +959,8 @@ struct NotebookView: View {
     }
 
     private func visibleGroups(width: CGFloat) -> Set<ToolGroup> {
-        // Fixed occupants: padding, sidebar toggle, gear, overflow button slot.
-        var budget = width - 28 - 34 - 34 - 34
+        // Fixed occupants: padding, sidebar toggle, image button, gear, overflow slot.
+        var budget = width - 28 - 34 - 34 - 34 - 34
         var kept: Set<ToolGroup> = []
         for group in ToolGroup.allCases.sorted(by: { $0.keepPriority < $1.keepPriority }) {
             if budget >= group.width {
@@ -966,6 +978,7 @@ struct NotebookView: View {
             formatButton("sidebar.left", help: config.sidebarVisible ? "Hide sidebar" : "Show sidebar") {
                 config.sidebarVisible.toggle()
             }
+            formatButton("photo", help: "Insert image") { editor.insertImageFromPanel() }
             ForEach(ToolGroup.allCases.filter { visible.contains($0) }, id: \.self) { group in
                 Rectangle().fill(Color.dsLine).frame(width: 1, height: 16)
                 inlineGroup(group)
@@ -1292,11 +1305,11 @@ private struct NotebookSettingsPane: View {
                     isOn: $config.smartQuotes)
             }
 
+            // The sidebar is off by default and toggled from the in-app toolbar,
+            // so there's no "show sidebar" switch here. Previews, timestamps, and
+            // comfortable density are always on — not settings — so this card is
+            // just the sidebar's width and sort order.
             DSSettingsCard(title: "Sidebar") {
-                DSToggleRow(
-                    title: "Show sidebar",
-                    caption: "Note list and search. Also toggleable from the toolbar.",
-                    isOn: $config.sidebarVisible)
                 Text("Width")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
@@ -1317,18 +1330,6 @@ private struct NotebookSettingsPane: View {
                         }
                     }
                 }
-                Text("List density")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
-                HStack(spacing: 8) {
-                    ForEach(NotebookListDensity.allCases, id: \.rawValue) { density in
-                        DSChip(title: density.displayName, selected: config.listDensity == density) {
-                            config.listDensity = density
-                        }
-                    }
-                }
-                DSToggleRow(title: "Show note previews", isOn: $config.showPreviews)
-                DSToggleRow(title: "Show edited timestamps", isOn: $config.showTimestamps)
             }
 
             DSSettingsCard(title: "Window") {
@@ -1620,6 +1621,100 @@ final class RichTextEditorProxy: ObservableObject {
         storage.endEditing()
         tv.didChangeText()
     }
+
+    // MARK: - Images
+
+    func insertImageFromPanel() {
+        guard let tv = textView else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image]
+        panel.begin { [weak self, weak tv] response in
+            guard response == .OK, let url = panel.url, tv != nil,
+                  let image = NSImage(contentsOf: url) else { return }
+            self?.insertImage(image)
+        }
+    }
+
+    func insertImage(_ image: NSImage) {
+        guard let tv = textView, let storage = tv.textStorage else { return }
+        let attachment = RichTextImageSupport.makeAttachment(image: image)
+        RichTextImageSupport.scale(attachment, in: tv)
+        let attrString = NSAttributedString(attachment: attachment)
+        let range = tv.selectedRange()
+        storage.replaceCharacters(in: range, with: attrString)
+        tv.setSelectedRange(NSRange(location: range.location + attrString.length, length: 0))
+        tv.didChangeText()
+    }
+}
+
+// Image-attachment plumbing shared by the toolbar insert path and the native
+// paste/drop path (importsGraphics). Attachments are backed by a PNG file
+// wrapper so they survive the RTFD round-trip; plain `.image` alone is dropped
+// by RTFD serialization.
+enum RichTextImageSupport {
+    static func makeAttachment(image: NSImage) -> NSTextAttachment {
+        let data = pngData(image) ?? image.tiffRepresentation ?? Data()
+        let wrapper = FileWrapper(regularFileWithContents: data)
+        wrapper.preferredFilename = pngData(image) != nil ? "image.png" : "image.tiff"
+        let attachment = NSTextAttachment(fileWrapper: wrapper)
+        attachment.image = image
+        return attachment
+    }
+
+    // Caps an attachment's on-screen width to the editor's text width, aspect
+    // preserved, so a large photo doesn't blow out the note.
+    static func scale(_ attachment: NSTextAttachment, in tv: NSTextView) {
+        let size = attachmentSize(attachment)
+        guard size.width > 0, size.height > 0 else { return }
+        let maxWidth = fittingWidth(tv)
+        if size.width > maxWidth {
+            attachment.bounds = NSRect(
+                x: 0, y: 0, width: maxWidth, height: size.height * (maxWidth / size.width))
+        } else {
+            attachment.bounds = NSRect(origin: .zero, size: size)
+        }
+    }
+
+    // Re-scales any attachment (e.g. one just pasted/dropped natively) wider than
+    // the editor. Returns true if anything changed so callers can reflow.
+    @discardableResult
+    static func clampOversized(in tv: NSTextView) -> Bool {
+        guard let storage = tv.textStorage, storage.length > 0 else { return false }
+        let maxWidth = fittingWidth(tv)
+        var changed = false
+        storage.enumerateAttribute(
+            .attachment, in: NSRange(location: 0, length: storage.length)
+        ) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            let size = attachmentSize(attachment)
+            guard size.width > maxWidth, size.width > 0, size.height > 0 else { return }
+            attachment.bounds = NSRect(
+                x: 0, y: 0, width: maxWidth, height: size.height * (maxWidth / size.width))
+            tv.layoutManager?.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+            changed = true
+        }
+        return changed
+    }
+
+    private static func attachmentSize(_ attachment: NSTextAttachment) -> NSSize {
+        if attachment.bounds.width > 0, attachment.bounds.height > 0 { return attachment.bounds.size }
+        if let image = attachment.image, image.size.width > 0 { return image.size }
+        return attachment.attachmentCell?.cellSize() ?? .zero
+    }
+
+    private static func fittingWidth(_ tv: NSTextView) -> CGFloat {
+        let padding = (tv.textContainer?.lineFragmentPadding ?? 0) * 2
+        let width = tv.bounds.width - tv.textContainerInset.width * 2 - padding
+        return max(50, width)
+    }
+
+    private static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
 }
 
 struct RichTextEditor: NSViewRepresentable {
@@ -1635,6 +1730,10 @@ struct RichTextEditor: NSViewRepresentable {
         let tv = scroll.documentView as! NSTextView
         tv.delegate = context.coordinator
         tv.isRichText = true
+        // Accept pasted and dragged-in images as attachments; clamped to width
+        // by the coordinator's change/load passes.
+        tv.importsGraphics = true
+        tv.allowsImageEditing = true
         tv.allowsUndo = true
         tv.usesFindBar = true
         tv.drawsBackground = true
@@ -1675,6 +1774,7 @@ struct RichTextEditor: NSViewRepresentable {
         if tv.string.isEmpty {
             tv.typingAttributes = model.config.bodyAttributes
         }
+        RichTextImageSupport.clampOversized(in: tv)
         coordinator.suppressChangeCallback = false
     }
 
@@ -1692,6 +1792,8 @@ struct RichTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !suppressChangeCallback, let tv = textView else { return }
+            // A pasted/dropped image lands here at native size; clamp it to width.
+            RichTextImageSupport.clampOversized(in: tv)
             model.textDidChange(tv.attributedString())
         }
     }

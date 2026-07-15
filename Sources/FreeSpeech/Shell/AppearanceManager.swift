@@ -112,8 +112,9 @@ final class AppearanceManager: ObservableObject {
         self.defaults = defaults
         gradientDirection = AppearanceGradientDirection(
             rawValue: defaults.string(forKey: Key.gradientDirection) ?? "") ?? .diagonal
-        // Reference wash runs at ~0.72; 0.42 read as barely-there in testing.
-        gradientIntensity = defaults.object(forKey: Key.gradientIntensity) as? Double ?? 0.62
+        // Reference wash runs at ~0.72, but the suite default sits richer than the
+        // reference mockup on real hardware; the slider still spans the full range.
+        gradientIntensity = defaults.object(forKey: Key.gradientIntensity) as? Double ?? 0.85
         density = AppearanceDensity(rawValue: defaults.string(forKey: Key.density) ?? "") ?? .comfortable
     }
 
@@ -150,7 +151,7 @@ final class AppearanceManager: ObservableObject {
 
     func reset() {
         gradientDirection = .diagonal
-        gradientIntensity = 0.62
+        gradientIntensity = 0.85
         density = .comfortable
     }
 

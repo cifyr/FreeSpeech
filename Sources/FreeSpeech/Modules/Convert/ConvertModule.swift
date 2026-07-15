@@ -175,7 +175,7 @@ final class ConvertModule: NSObject, AppModule, NSMenuDelegate {
 
     // Small popup-style window, sized like Notebook's floating panel; the
     // panes scroll inside it.
-    var settingsPopupSize: NSSize { NSSize(width: 680, height: 460) }
+    var settingsPopupSize: NSSize { NSSize(width: 480, height: 460) }
     var opensOwnWindow: Bool { true }
 
     func openSettings() {
@@ -849,6 +849,12 @@ struct ConvertToolTabView: View {
     @State private var toastDuration: Double
     @State private var toastLocation: ConvertToastLocation
     @ObservedObject var registry: ModuleRegistry
+    @State private var subTab: ToolSubTab = .formats
+
+    // Formats: the per-media target pickers. Output: destination, toast, control.
+    private enum ToolSubTab: String, CaseIterable {
+        case formats = "Formats", output = "Output"
+    }
 
     init(model: ConvertPaneModel, settings: Settings, registry: ModuleRegistry) {
         self.model = model
@@ -875,6 +881,32 @@ struct ConvertToolTabView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            subTabRow
+            switch subTab {
+            case .formats: formatsTab
+            case .output: outputTab
+            }
+        }
+    }
+
+    // Nested sub-tab strip: tighter spacing than the outer App/Tool row so the
+    // two levels read as a hierarchy, not a flat set.
+    private var subTabRow: some View {
+        ZStack(alignment: .bottom) {
+            Rectangle().fill(Color.dsLine).frame(height: 1)
+            HStack(spacing: 18) {
+                ForEach(ToolSubTab.allCases, id: \.self) { candidate in
+                    DSTabButton(title: candidate.rawValue, selected: subTab == candidate) {
+                        subTab = candidate
+                    }
+                }
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder private var formatsTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Images") {
                 optionRow("Target") {
@@ -939,7 +971,11 @@ struct ConvertToolTabView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
             }
+        }
+    }
 
+    @ViewBuilder private var outputTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Files") {
                 optionRow("Output") {
                     ForEach(ConvertPlan.FileDestination.allCases, id: \.rawValue) { value in

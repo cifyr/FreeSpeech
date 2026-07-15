@@ -20,7 +20,7 @@ final class SuiteServiceBridge: NSObject {
         Log.info("clop: service invoked with \(urls.count) file(s)")
         guard let module = registry.module(id: ModuleCatalog.clop.id) as? ClopModule,
               registry.isEnabled(id: ModuleCatalog.clop.id) else {
-            ClopToast.show("Turn on Clop in FreeKit to optimize files")
+            ClopToast.show("Turn on Simplify in FreeKit to compress files")
             return
         }
         guard !urls.isEmpty else { return }

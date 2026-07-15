@@ -426,7 +426,7 @@ private struct AppearancePane: View {
                         Text("Intensity")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Color.dsPaper)
-                        DSSlider(value: $appearance.gradientIntensity, range: 0.1...0.85)
+                        DSSlider(value: $appearance.gradientIntensity, range: 0.1...1.0)
                         Text("\(Int(appearance.gradientIntensity * 100))%")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(Color.dsMuted)

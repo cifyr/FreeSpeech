@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 public enum NotebookSortOrder: String, CaseIterable, Codable {
     case modified
@@ -12,10 +13,11 @@ public enum NotebookSortOrder: String, CaseIterable, Codable {
     }
 }
 
-// One note. `rich` is an opaque RTF blob produced by the app layer (RTF because
-// it round-trips bold, color, and NSTextList bullets, and stays a documented
-// format on disk); `plainText` is kept alongside it so search never has to
-// parse RTF in Core.
+// One note. `rich` is an opaque RTF or RTFD blob produced by the app layer:
+// RTF round-trips bold, color, and bullets and stays a documented format on
+// disk, but plain RTF drops image attachments, so notes carrying images are
+// serialized as RTFD instead (see NotebookRichText). `plainText` is kept
+// alongside it so search never has to parse RTF/RTFD in Core.
 public struct Note: Identifiable, Equatable, Codable {
     public let id: UUID
     public var title: String
@@ -34,6 +36,35 @@ public struct Note: Identifiable, Equatable, Codable {
         self.rich = rich
         self.modified = modified
         self.appleNoteID = appleNoteID
+    }
+}
+
+// Serializes a note's rich body to the `rich` blob and back. RTF is the default
+// (small, documented, back-compatible), but it silently drops NSTextAttachments,
+// so a body containing images is written as RTFD instead; decoding tries RTFD
+// first (a superset that also reads plain RTF) and falls back to RTF.
+public enum NotebookRichText {
+    public static func data(from text: NSAttributedString) -> Data? {
+        let range = NSRange(location: 0, length: text.length)
+        if hasAttachments(text) {
+            return text.rtfd(from: range, documentAttributes: [:])
+        }
+        return text.rtf(from: range, documentAttributes: [:])
+    }
+
+    public static func attributedString(from data: Data) -> NSAttributedString? {
+        NSAttributedString(rtfd: data, documentAttributes: nil)
+            ?? NSAttributedString(rtf: data, documentAttributes: nil)
+    }
+
+    public static func hasAttachments(_ text: NSAttributedString) -> Bool {
+        var found = false
+        text.enumerateAttribute(
+            .attachment, in: NSRange(location: 0, length: text.length)
+        ) { value, _, stop in
+            if value != nil { found = true; stop.pointee = true }
+        }
+        return found
     }
 }
 
@@ -175,6 +206,19 @@ public enum AppleNotesScript {
         """
         tell application "Notes"
             return body of note id \(quoted(id))
+        end tell
+        """
+    }
+
+    // Body plus modification date, so the merge can pick the most-recently-edited
+    // side rather than the longer one (which resurrected text deleted in FreeKit).
+    // Returning the AppleScript date directly lets NSAppleEventDescriptor bridge
+    // it to a Date via dateValue — no locale-sensitive string parsing.
+    public static func pullWithModified(id: String) -> String {
+        """
+        tell application "Notes"
+            set theNote to note id \(quoted(id))
+            return {body of theNote, modification date of theNote}
         end tell
         """
     }

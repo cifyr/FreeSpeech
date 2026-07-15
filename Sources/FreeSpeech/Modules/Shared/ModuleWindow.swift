@@ -51,7 +51,9 @@ final class ModuleWindowManager: ObservableObject {
     }
 
     private static func autosaveName(_ id: String) -> String {
-        "FreeKit.ModuleWindow.\(id)"
+        // v2: the design pass reset default window sizes (e.g. Convert 680→480);
+        // the suffix drops stale saved frames so the new defaults take once.
+        "FreeKit.ModuleWindow.v2.\(id)"
     }
 
     private func makeWindow(for module: AppModule) -> NSWindow {

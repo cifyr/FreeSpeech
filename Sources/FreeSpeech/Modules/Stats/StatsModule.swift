@@ -68,7 +68,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .cpu: return [("percent", "Percent"), ("cores", "Core bars")]
             case .memory: return [("percent", "Percent"), ("used", "Used GB")]
             case .gpu: return [("percent", "Percent")]
-            case .network: return [("down", "Down"), ("up", "Up"), ("both", "Both")]
+            case .network: return [("both", "Both"), ("down", "Down"), ("up", "Up")]
             case .disk: return [("free", "Free"), ("used", "Used"), ("percent", "Used %")]
             case .battery: return [("percent", "Percent"), ("time", "Time left")]
             case .system: return [("load", "Load"), ("uptime", "Uptime")]
@@ -143,10 +143,12 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         settings.moduleBool(id: info.id, key: kind.rowKey(row)) ?? true
     }
 
-    // How a promoted stat renders in the menu bar: plain text or one of the
-    // drawn widgets fed by a rolling history of the stat's normalized value.
+    // How a promoted stat renders in the menu bar: plain text, one of the drawn
+    // widgets fed by a rolling history of the stat's normalized value, or the
+    // combined value+graph. For network, every graph style renders the two-row
+    // up/down chart; `.value` shows the "↓ x ↑ y" text; `.valueGraph` shows both.
     enum ItemStyle: String, CaseIterable {
-        case value, bar, dots, line, bars
+        case value, bar, dots, line, bars, valueGraph
 
         var displayName: String {
             switch self {
@@ -155,13 +157,91 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             case .dots: return "Dots"
             case .line: return "Line"
             case .bars: return "Graph"
+            case .valueGraph: return "Value + graph"
             }
         }
+
+        var drawsGraph: Bool { self != .value }
+        var drawsText: Bool { self == .value || self == .valueGraph }
+    }
+
+    // Network defaults to text + two-row chart so a promoted network item shows
+    // both directions the moment it appears — the whole point of the item.
+    static func defaultStyle(for kind: StatKind) -> ItemStyle {
+        kind == .network ? .valueGraph : .value
     }
 
     private func itemStyle(_ kind: StatKind) -> ItemStyle {
         settings.moduleString(id: info.id, key: "style.\(kind.rawValue)")
-            .flatMap(ItemStyle.init) ?? .value
+            .flatMap(ItemStyle.init) ?? Self.defaultStyle(for: kind)
+    }
+
+    // How a promoted stat's drawn widget (and its icon) is colored. `standard`
+    // keeps the template look macOS tints to the menu bar; the others produce
+    // colored, non-template images.
+    enum ColorMode: String, CaseIterable {
+        case standard, accent, load, updown
+
+        var displayName: String {
+            switch self {
+            case .standard: return "Menu bar"
+            case .accent: return "Accent"
+            case .load: return "By load"
+            case .updown: return "Up / down"
+            }
+        }
+
+        // Load coloring needs a bounded 0...1 signal; network trades it for the
+        // download/upload color pair instead.
+        static func available(for kind: StatKind) -> [ColorMode] {
+            kind == .network ? [.standard, .accent, .updown] : [.standard, .accent, .load]
+        }
+    }
+
+    static let networkDownColor = NSColor.systemBlue
+    static let networkUpColor = NSColor.systemRed
+
+    private func colorMode(_ kind: StatKind) -> ColorMode {
+        let allowed = ColorMode.available(for: kind)
+        let saved = settings.moduleString(id: info.id, key: "color.\(kind.rawValue)")
+            .flatMap(ColorMode.init)
+        guard let saved, allowed.contains(saved) else { return .standard }
+        return saved
+    }
+
+    private static func loadColor(_ level: StatsFormatting.LoadLevel) -> NSColor {
+        switch level {
+        case .normal: return .systemGreen
+        case .elevated: return .systemYellow
+        case .high: return .systemRed
+        }
+    }
+
+    // The colored fill for a single-series graph/icon given the current value;
+    // nil means "template, let the menu bar tint it".
+    private func widgetColor(_ kind: StatKind, value: Double) -> NSColor? {
+        switch colorMode(kind) {
+        case .standard: return nil
+        case .accent: return DS.accent
+        case .load:
+            let level = StatsFormatting.loadLevel(
+                value, zones: StatsFormatting.loadZones(forMetric: kind.rawValue))
+            return Self.loadColor(level)
+        case .updown: return Self.networkDownColor
+        }
+    }
+
+    // A compact string identifying the current color decision so a value item
+    // only repaints when the color actually changes (e.g. crossing a load tier).
+    private func colorKey(_ kind: StatKind, value: Double) -> String {
+        switch colorMode(kind) {
+        case .standard: return "std"
+        case .accent: return "accent"
+        case .updown: return "updown"
+        case .load:
+            return "load:" + StatsFormatting.loadLevel(
+                value, zones: StatsFormatting.loadZones(forMetric: kind.rawValue)).rawValue
+        }
     }
 
     private var showsOverviewItem: Bool {
@@ -223,9 +303,13 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
     // Rebuilds the whole set: the main gauge item plus one item per promoted
     // stat. Cheap enough to run on every settings change.
     private func applyMenuBarConfiguration() {
-        let showAll = active && menuBarVisible
+        // The Control Center MENU toggle and the "show overview icon" setting
+        // both gate the overview gauge only. Per-metric items are driven solely
+        // by their own hasOwnItem flag, so hiding the overview (or MENU off)
+        // never suppresses a subset icon.
+        let overviewVisible = active && menuBarVisible && showsOverviewItem
 
-        if showAll && showsOverviewItem {
+        if overviewVisible {
             if mainItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
                 item.button?.image = NSImage(
@@ -240,7 +324,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         }
 
         for kind in StatKind.allCases {
-            let wanted = showAll && hasOwnItem(kind)
+            let wanted = active && hasOwnItem(kind)
             if wanted {
                 if statItems[kind] == nil {
                     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -261,7 +345,9 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
     }
 
     private var anyLiveItems: Bool {
-        active && menuBarVisible && StatKind.allCases.contains { hasOwnItem($0) }
+        // Subset items carry the live values the timer refreshes; they no longer
+        // depend on the master MENU toggle.
+        active && StatKind.allCases.contains { hasOwnItem($0) }
     }
 
     private func reconfigureMenuBarTimer() {
@@ -279,52 +365,110 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
 
     // Rolling normalized history per promoted stat, feeding the drawn widgets.
     private var history: [StatKind: [Double]] = [:]
+    // Network keeps its own down/up histories (normalized against one shared
+    // peak so the two are comparable) for the split two-row "both" graph.
+    private var networkDownHistory: [Double] = []
+    private var networkUpHistory: [Double] = []
+    private var networkPeak: Double = 0
     private static let historyLength = 32
     // Cache what each button currently shows so ticks only touch what changed;
     // resetting image/title every tick made the items visibly flicker.
-    private var renderedState: [StatKind: (style: ItemStyle, icon: Bool, text: String)] = [:]
+    private struct Rendered { var style: ItemStyle; var icon: Bool; var text: String; var colorKey: String }
+    private var renderedState: [StatKind: Rendered] = [:]
 
     private func updateStatItems(sampleNow: Bool) {
         guard anyLiveItems else { return }
         let snapshot = sampleNow ? sampler.sample() : sampler.lastSnapshot
         for (kind, item) in statItems where item.isVisible {
             guard let button = item.button else { continue }
+            var current = 0.0
             if let value = normalizedValue(kind: kind, snapshot: snapshot) {
+                current = value
                 var series = history[kind] ?? []
                 series.append(value)
                 if series.count > Self.historyLength { series.removeFirst() }
                 history[kind] = series
             }
+            if kind == .network { pushNetworkSamples(snapshot) }
             let style = itemStyle(kind)
             let icon = showsIcon(kind)
             let text = menuBarText(kind: kind, snapshot: snapshot)
+            let key = colorKey(kind, value: current)
             let previous = renderedState[kind]
+            let textChanged = previous?.style != style || previous?.text != text
+                || previous?.colorKey != key
+            let iconChanged = previous?.style != style || previous?.icon != icon
+                || previous?.colorKey != key
 
             switch style {
             case .value:
-                if previous?.style != .value || previous?.icon != icon {
-                    button.image = icon
-                        ? NSImage(systemSymbolName: kind.symbolName,
-                                  accessibilityDescription: kind.displayName)
-                        : nil
+                if iconChanged {
+                    button.image = iconImage(kind, show: icon, value: current)
                     button.imagePosition = .imageLeading
                 }
-                if previous?.text != text || previous?.style != .value {
-                    button.attributedTitle = NSAttributedString(
-                        string: text,
-                        attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
-                }
+                if textChanged { button.attributedTitle = Self.menuBarTitle(text) }
+            case .valueGraph:
+                // Graph moves every tick, so its image is always redrawn; the
+                // icon slot carries the graph, the title carries the readout.
+                button.image = graphImage(kind, style: Self.combinedGraphStyle(kind), value: current)
+                button.imagePosition = .imageLeading
+                if textChanged { button.attributedTitle = Self.menuBarTitle(text) }
             case .bar, .dots, .line, .bars:
-                button.image = StatusWidgetRenderer.image(
-                    style: style, history: history[kind] ?? [])
+                button.image = graphImage(kind, style: style, value: current)
                 button.imagePosition = .imageOnly
-                if previous?.style == .value {
+                if previous?.style.drawsText ?? false {
                     button.attributedTitle = NSAttributedString(string: "")
                 }
             }
             button.toolTip = "\(kind.displayName): \(text)"
-            renderedState[kind] = (style, icon, text)
+            renderedState[kind] = Rendered(style: style, icon: icon, text: text, colorKey: key)
         }
+    }
+
+    private static func menuBarTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
+    }
+
+    // valueGraph pairs the readout with a small graph: the two-row up/down chart
+    // for network, a mini bar sparkline for everything else.
+    private static func combinedGraphStyle(_ kind: StatKind) -> ItemStyle {
+        kind == .network ? .line : .bars
+    }
+
+    // Menu-bar icon for text styles, tinted (non-template) when a color mode
+    // other than standard is active so a value item still reflects its color.
+    private func iconImage(_ kind: StatKind, show: Bool, value: Double) -> NSImage? {
+        guard show,
+              let base = NSImage(systemSymbolName: kind.symbolName,
+                                 accessibilityDescription: kind.displayName) else { return nil }
+        guard let tint = widgetColor(kind, value: value) else {
+            base.isTemplate = true
+            return base
+        }
+        let tinted = base.withSymbolConfiguration(.init(paletteColors: [tint])) ?? base
+        tinted.isTemplate = false
+        return tinted
+    }
+
+    // The drawn widget for a promoted stat. Network always draws the two-row
+    // up/down chart; its color pair depends on the color mode.
+    private func graphImage(_ kind: StatKind, style: ItemStyle, value: Double) -> NSImage {
+        if kind == .network {
+            let down: NSColor?
+            let up: NSColor?
+            switch colorMode(kind) {
+            case .updown: (down, up) = (Self.networkDownColor, Self.networkUpColor)
+            case .accent: (down, up) = (DS.accent, DS.accent)
+            case .standard, .load: (down, up) = (nil, nil)
+            }
+            return StatusWidgetRenderer.networkImage(
+                style: style, down: networkDownHistory, up: networkUpHistory,
+                downColor: down, upColor: up)
+        }
+        return StatusWidgetRenderer.image(
+            style: style, history: history[kind] ?? [], color: widgetColor(kind, value: value))
     }
 
     // 0...1 value for graph styles; unbounded metrics normalize against the
@@ -357,6 +501,22 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             return sampler.deviceBatteries().map(\.percent).min()
                 .map { Double($0) / 100 }
         }
+    }
+
+    // Feeds the split network graph: both directions share one running peak so
+    // download and upload rows stay on the same scale and read comparably.
+    private func pushNetworkSamples(_ snapshot: StatsSnapshot) {
+        let floor: Double = 100 * 1024
+        let down = snapshot.downloadBytesPerSecond
+        let up = snapshot.uploadBytesPerSecond
+        networkPeak = max(networkPeak, down, up, floor)
+        appendNetwork(&networkDownHistory, down / networkPeak)
+        appendNetwork(&networkUpHistory, up / networkPeak)
+    }
+
+    private func appendNetwork(_ series: inout [Double], _ value: Double) {
+        series.append(value)
+        if series.count > Self.historyLength { series.removeFirst() }
     }
 
     private var peaks: [StatKind: Double] = [:]
@@ -428,14 +588,14 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         case header(String)
         case metric(String, String)
         case separator
-        case settingsAction
+        case overviewToggle(Bool)
 
         var structuralKind: Int {
             switch self {
             case .header: return 0
             case .metric: return 1
             case .separator: return 2
-            case .settingsAction: return 3
+            case .overviewToggle: return 3
             }
         }
     }
@@ -453,7 +613,9 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
                     menu.items[index].attributedTitle = Self.headerTitle(text)
                 case .metric(let label, let value):
                     menu.items[index].attributedTitle = Self.metricTitle(label, value)
-                case .separator, .settingsAction:
+                case .overviewToggle(let checked):
+                    menu.items[index].state = checked ? .on : .off
+                case .separator:
                     break
                 }
             }
@@ -469,12 +631,13 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
                 addMetric(label, value)
             case .separator:
                 menu.addItem(.separator())
-            case .settingsAction:
-                let settingsItem = NSMenuItem(
-                    title: "Stats Settings\u{2026}", action: #selector(openSettingsFromMenu),
+            case .overviewToggle(let checked):
+                let item = NSMenuItem(
+                    title: "Show Overview Icon", action: #selector(toggleOverviewFromMenu),
                     keyEquivalent: "")
-                settingsItem.target = self
-                menu.addItem(settingsItem)
+                item.target = self
+                item.state = checked ? .on : .off
+                menu.addItem(item)
             }
         }
     }
@@ -497,7 +660,7 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             addedSection = true
         }
         entries.append(.separator)
-        entries.append(.settingsAction)
+        entries.append(.overviewToggle(showsOverviewItem))
         return entries
     }
 
@@ -545,8 +708,8 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
             return [("GPU", StatsFormatting.percent(utilization))]
         case .network:
             var rows: [(String, String)] = []
-            if showsRow(kind, "down") { rows.append(("Down", StatsFormatting.bytesPerSecond(snapshot.downloadBytesPerSecond))) }
-            if showsRow(kind, "up") { rows.append(("Up", StatsFormatting.bytesPerSecond(snapshot.uploadBytesPerSecond))) }
+            if showsRow(kind, "down") { rows.append(("Down", "\u{2193} \(StatsFormatting.bytesPerSecond(snapshot.downloadBytesPerSecond))")) }
+            if showsRow(kind, "up") { rows.append(("Up", "\u{2191} \(StatsFormatting.bytesPerSecond(snapshot.uploadBytesPerSecond))")) }
             if showsRow(kind, "address"), let address = snapshot.localIPv4 {
                 rows.append(("Address", address))
             }
@@ -587,8 +750,9 @@ final class StatsModule: NSObject, AppModule, NSMenuDelegate {
         }
     }
 
-    @objc private func openSettingsFromMenu() {
-        openSettings()
+    @objc private func toggleOverviewFromMenu() {
+        settings.setModuleBool(!showsOverviewItem, id: info.id, key: Key.showOverviewItem)
+        applyMenuBarConfiguration()
     }
 
     private static func headerTitle(_ text: String) -> NSAttributedString {
@@ -967,6 +1131,7 @@ private struct StatsMenuBarSection: View {
     @State private var variant: String
     @State private var icon: Bool
     @State private var style: StatsModule.ItemStyle
+    @State private var colorMode: StatsModule.ColorMode
 
     init(settings: Settings, kind: StatsModule.StatKind, onDisplayChange: @escaping () -> Void) {
         self.settings = settings
@@ -978,7 +1143,11 @@ private struct StatsMenuBarSection: View {
             ?? kind.variants[0].id)
         _icon = State(initialValue: settings.moduleBool(id: id, key: kind.iconKey) ?? true)
         _style = State(initialValue: settings.moduleString(id: id, key: "style.\(kind.rawValue)")
-            .flatMap(StatsModule.ItemStyle.init) ?? .value)
+            .flatMap(StatsModule.ItemStyle.init) ?? StatsModule.defaultStyle(for: kind))
+        let savedColor = settings.moduleString(id: id, key: "color.\(kind.rawValue)")
+            .flatMap(StatsModule.ColorMode.init)
+        let allowed = StatsModule.ColorMode.available(for: kind)
+        _colorMode = State(initialValue: (savedColor.map { allowed.contains($0) ? $0 : .standard }) ?? .standard)
     }
 
     var body: some View {
@@ -991,56 +1160,99 @@ private struct StatsMenuBarSection: View {
                     onDisplayChange()
                 }))
             if ownItem {
-                HStack(spacing: 8) {
+                // Chips wrap in a grid rather than a single non-wrapping HStack,
+                // which clipped inside the ~260pt settings column.
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Style")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
-                    ForEach(StatsModule.ItemStyle.allCases, id: \.rawValue) { option in
-                        DSChip(title: option.displayName, selected: style == option) {
-                            style = option
-                            settings.setModuleString(
-                                option.rawValue, id: moduleID, key: "style.\(kind.rawValue)")
-                            onDisplayChange()
-                        }
-                        .fixedSize()
-                    }
-                    Spacer()
-                }
-                HStack(spacing: 8) {
-                    if style == .value || kind.variants.count > 1 {
-                        Text(style == .value ? "Show" : "Track")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.dsFaint)
-                        ForEach(kind.variants, id: \.id) { option in
-                            DSChip(title: option.name, selected: variant == option.id) {
-                                variant = option.id
-                                settings.setModuleString(option.id, id: moduleID, key: kind.variantKey)
+                    LazyVGrid(columns: chipColumns, alignment: .leading, spacing: 6) {
+                        ForEach(StatsModule.ItemStyle.allCases, id: \.rawValue) { option in
+                            DSChip(title: option.displayName, selected: style == option) {
+                                style = option
+                                settings.setModuleString(
+                                    option.rawValue, id: moduleID, key: "style.\(kind.rawValue)")
                                 onDisplayChange()
                             }
                             .fixedSize()
                         }
                     }
-                    if style == .value {
-                        DSChip(title: "Icon", selected: icon) {
-                            icon.toggle()
-                            settings.setModuleBool(icon, id: moduleID, key: kind.iconKey)
-                            onDisplayChange()
+                }
+                if style.drawsText || kind.variants.count > 1 {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(style.drawsText ? "Show" : "Track")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsFaint)
+                        LazyVGrid(columns: chipColumns, alignment: .leading, spacing: 6) {
+                            ForEach(kind.variants, id: \.id) { option in
+                                DSChip(title: option.name, selected: variant == option.id) {
+                                    variant = option.id
+                                    settings.setModuleString(option.id, id: moduleID, key: kind.variantKey)
+                                    onDisplayChange()
+                                }
+                                .fixedSize()
+                            }
+                            if style == .value {
+                                DSChip(title: "Icon", selected: icon) {
+                                    icon.toggle()
+                                    settings.setModuleBool(icon, id: moduleID, key: kind.iconKey)
+                                    onDisplayChange()
+                                }
+                                .fixedSize()
+                            }
                         }
-                        .fixedSize()
                     }
-                    Spacer()
+                }
+                let colorModes = StatsModule.ColorMode.available(for: kind)
+                if colorModes.count > 1 {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Color")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.dsFaint)
+                        LazyVGrid(columns: chipColumns, alignment: .leading, spacing: 6) {
+                            ForEach(colorModes, id: \.rawValue) { option in
+                                DSChip(title: option.displayName, selected: colorMode == option) {
+                                    colorMode = option
+                                    settings.setModuleString(
+                                        option.rawValue, id: moduleID, key: "color.\(kind.rawValue)")
+                                    onDisplayChange()
+                                }
+                                .fixedSize()
+                            }
+                        }
+                        Text(colorCaption)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.dsFaint)
+                    }
                 }
             }
         }
+    }
+
+    private var colorCaption: String {
+        switch colorMode {
+        case .standard: return "Monochrome, tinted to match the menu bar."
+        case .accent: return "Filled with the app accent color."
+        case .load: return kind == .battery || kind == .bluetooth
+            ? "Greens when charged, reddens as the battery drains."
+            : "Greens when idle, reddens as usage climbs."
+        case .updown: return "Download in blue, upload in red."
+        }
+    }
+
+    private var chipColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 76), spacing: 6, alignment: .leading)]
     }
 }
 
 // MARK: - Menu bar widgets
 
-// Draws the graphical menu-bar styles as template images: shapes render in
-// black and macOS tints them to match the menu bar, light or dark.
+// Draws the graphical menu-bar styles. With `color == nil` they render in black
+// as template images and macOS tints them to the menu bar; with a color they
+// render filled and non-template so the metric keeps its own hue (accent or a
+// load tier).
 enum StatusWidgetRenderer {
-    static func image(style: StatsModule.ItemStyle, history: [Double]) -> NSImage {
+    static func image(style: StatsModule.ItemStyle, history: [Double], color: NSColor? = nil) -> NSImage {
         let size: NSSize
         switch style {
         case .bar: size = NSSize(width: 36, height: 16)
@@ -1048,11 +1260,12 @@ enum StatusWidgetRenderer {
         default: size = NSSize(width: 46, height: 16)
         }
         let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.black.setFill()
-            NSColor.black.setStroke()
+            let ink = color ?? .black
+            ink.setFill()
+            ink.setStroke()
             let current = CGFloat(clamp(history.last ?? 0))
             switch style {
-            case .value:
+            case .value, .valueGraph:
                 break
             case .bar:
                 let outline = NSBezierPath(
@@ -1111,8 +1324,65 @@ enum StatusWidgetRenderer {
             }
             return true
         }
-        image.isTemplate = true
+        image.isTemplate = (color == nil)
         return image
+    }
+
+    // Network "both": half-width box split into two stacked mini-sparklines —
+    // download on top, upload on the bottom, a 1px gap between — so both
+    // directions read at once. Each row is normalized independently by the
+    // caller against a shared peak. With a color pair the rows carry their own
+    // download/upload hues (non-template); without, they stay template black.
+    static func networkImage(
+        style: StatsModule.ItemStyle, down: [Double], up: [Double],
+        downColor: NSColor? = nil, upColor: NSColor? = nil
+    ) -> NSImage {
+        let size = NSSize(width: 26, height: 16)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let rowHeight: CGFloat = 7  // two 7pt rows leave a 2px gap in a 16pt box
+            let topRow = NSRect(
+                x: 0, y: rect.height - rowHeight, width: rect.width, height: rowHeight)
+            let bottomRow = NSRect(x: 0, y: 0, width: rect.width, height: rowHeight)
+            drawSeries(style: style, values: down, in: topRow, color: downColor ?? .black)
+            drawSeries(style: style, values: up, in: bottomRow, color: upColor ?? .black)
+            return true
+        }
+        image.isTemplate = (downColor == nil && upColor == nil)
+        return image
+    }
+
+    // Draws one bar/line sparkline confined to `rect`; shared by the network
+    // split rows so both directions render identically.
+    private static func drawSeries(
+        style: StatsModule.ItemStyle, values: [Double], in rect: NSRect, color: NSColor = .black
+    ) {
+        color.setFill()
+        color.setStroke()
+        switch style {
+        case .line:
+            guard values.count > 1 else { return }
+            let path = NSBezierPath()
+            path.lineWidth = 1
+            path.lineJoinStyle = .round
+            let stepX = (rect.width - 1) / CGFloat(values.count - 1)
+            for (index, value) in values.enumerated() {
+                let point = NSPoint(
+                    x: rect.minX + 0.5 + CGFloat(index) * stepX,
+                    y: rect.minY + 0.5 + (rect.height - 1) * CGFloat(clamp(value)))
+                index == 0 ? path.move(to: point) : path.line(to: point)
+            }
+            path.stroke()
+        default:
+            let slots = 16
+            let recent = Array(values.suffix(slots))
+            let barWidth = rect.width / CGFloat(slots)
+            for (index, value) in recent.enumerated() {
+                let height = max(1, (rect.height - 0.5) * CGFloat(clamp(value)))
+                NSBezierPath(rect: NSRect(
+                    x: rect.minX + CGFloat(index) * barWidth + 0.25, y: rect.minY,
+                    width: barWidth - 0.5, height: height)).fill()
+            }
+        }
     }
 
     private static func clamp(_ value: Double) -> Double {

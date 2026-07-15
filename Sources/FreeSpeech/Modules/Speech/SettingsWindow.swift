@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 import FreeSpeechCore
 
 extension AudioInputDevice: Identifiable {
@@ -86,6 +87,13 @@ final class SettingsStore: ObservableObject {
     @Published var diarizerStatus: String = ""
     private let diarizerDownloader = ModelDownloader()
 
+    // In-flight catalog downloads: modelName -> progress fraction (0...1); presence means
+    // downloading. Errors are surfaced per-model so a failed row can offer Retry. A fresh
+    // ModelDownloader is retained per download so concurrent fetches don't clobber each other.
+    @Published var modelDownloads: [String: Double] = [:]
+    @Published var modelDownloadErrors: [String: String] = [:]
+    private var modelDownloaders: [String: ModelDownloader] = [:]
+
     let updates: UpdateManager
 
     let languageModelAvailable: Bool
@@ -150,6 +158,57 @@ final class SettingsStore: ObservableObject {
                     }
                 }
             })
+    }
+
+    // MARK: - Model downloads
+
+    // Fetches a catalog model that isn't installed yet. Same one-time HF download as
+    // build.sh / the diarizer, driven from the Audio tab so users can add models in-app.
+    func downloadModel(_ id: String) {
+        guard modelDownloads[id] == nil else { return }
+        guard !installedModels.contains(id) else { return }
+        let destination = AppPaths.modelFile(named: id)
+        modelDownloadErrors[id] = nil
+        modelDownloads[id] = 0
+        let downloader = ModelDownloader()
+        modelDownloaders[id] = downloader
+        Log.info("model download requested: \(id)")
+        downloader.download(
+            modelName: id, to: destination,
+            progress: { [weak self] fraction in
+                DispatchQueue.main.async { self?.modelDownloads[id] = fraction }
+            },
+            completion: { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.modelDownloads[id] = nil
+                    self.modelDownloaders[id] = nil
+                    switch result {
+                    case .success:
+                        Log.info("model installed: \(id)")
+                        self.refresh()  // picks up the new file in installedModels
+                    case .failure(let error):
+                        Log.error("model download failed (\(id)): \(error.localizedDescription)")
+                        self.modelDownloadErrors[id] = error.localizedDescription
+                    }
+                }
+            })
+    }
+
+    // Frees disk by trashing an installed model. Never the active one — that would leave
+    // transcription with no model. Moves to Trash rather than hard-deleting.
+    func deleteModel(_ id: String) {
+        guard id != modelName else { return }
+        guard modelDownloads[id] == nil else { return }
+        let url = AppPaths.modelFile(named: id)
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            Log.info("model moved to trash: \(id)")
+            refresh()
+        } catch {
+            Log.error("model delete failed (\(id)): \(error.localizedDescription)")
+            modelDownloadErrors[id] = "Couldn't remove: \(error.localizedDescription)"
+        }
     }
 
     func refresh() {
@@ -238,6 +297,15 @@ final class SettingsStore: ObservableObject {
 
     func promoteMic(_ uid: String) {
         micPriority = [uid] + micPriority.filter { $0 != uid }
+        refresh()
+    }
+
+    // Drag-reorder writes the full shown order into micPriority, so every
+    // connected mic becomes explicitly ranked in exactly the order dropped.
+    func moveMic(fromOffsets: IndexSet, toOffset: Int) {
+        var order = connectedMics.map(\.uid)
+        order.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        micPriority = order
         refresh()
     }
 
@@ -345,7 +413,6 @@ struct SettingsView: View {
     @ViewBuilder private var generalTab: some View {
         activationCard.staggeredAppear(0)
         feedbackCard.staggeredAppear(1)
-        updatesCard.staggeredAppear(2)
     }
 
     @ViewBuilder private var audioTab: some View {
@@ -438,36 +505,8 @@ struct SettingsView: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Color.dsMuted)
                     }
-                    ForEach(store.connectedMics) { mic in
-                        HStack(spacing: 10) {
-                            Button {
-                                store.promoteMic(mic.uid)
-                            } label: {
-                                Image(systemName: "chevron.up")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.dsMuted)
-                                    .frame(width: 26, height: 26)
-                                    .background(Color.dsInk2, in: Circle())
-                                    .overlay(Circle().strokeBorder(Color.dsLine, lineWidth: 1))
-                            }
-                            .buttonStyle(.dsPress)
-                            .help("Prefer this microphone")
-                            Text(mic.name)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Color.dsPaper)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .layoutPriority(1)
-                            Spacer()
-                            if store.activeMicUID == mic.uid {
-                                tag("Active", color: .dsAccent)
-                            } else if store.activeMicUID == nil, mic.uid == store.connectedMics.first?.uid {
-                                tag("System default", color: .dsMuted)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    Text("Recording binds the highest listed microphone that is connected; unplugged ones are skipped. With no priority set, the system default input is used.")
+                    MicPriorityList(store: store)
+                    Text("Drag to set the order. Recording binds the highest listed microphone that is connected; unplugged ones are skipped. With no priority set, the system default input is used.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
@@ -495,18 +534,20 @@ struct SettingsView: View {
                 card {
                     sectionLabel("Model")
                     if store.installedModels.isEmpty {
-                        Text("No models installed — run ./build.sh")
-                            .font(.system(size: 13))
+                        Text("No models installed yet — download one below to start transcribing.")
+                            .font(.system(size: 12))
                             .foregroundStyle(Color.dsMuted)
                     }
-                    ForEach(ModelCatalog.ordered(store.installedModels), id: \.id) { info in
-                        selectableRow(
-                            title: info.name,
+                    ForEach(ModelCatalog.catalogAndInstalled(store.installedModels), id: \.id) { info in
+                        ModelCatalogRow(
+                            store: store,
+                            info: info,
                             subtitle: modelSubtitle(info),
-                            selected: store.modelName == info.id,
-                            badge: info.recommended ? "Recommended" : nil
-                        ) { store.modelName = info.id }
+                            tag: { t, c in AnyView(tag(t, color: c)) })
                     }
+                    Text("Installed models are selectable; the rest download on demand from the whisper.cpp model repo (one-time, local afterward). Larger models are more accurate, smaller ones faster.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsFaint)
                 }
     }
 
@@ -747,15 +788,8 @@ struct SettingsView: View {
                         Spacer()
                         DSToggle(isOn: $store.soundCuesEnabled)
                     }
-                    HStack {
-                        Text("Launch at login")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.dsPaper)
-                        Spacer()
-                        DSToggle(isOn: Binding(
-                            get: { store.launchAtLogin },
-                            set: { store.setLaunchAtLogin($0) }))
-                    }
+                    // Launch at login lives once, suite-wide, in the Control
+                    // Center footer — not duplicated per module.
                     Divider().overlay(Color.dsLine).padding(.vertical, 4)
                     sectionLabel("HUD style")
                     HStack(spacing: 8) {
@@ -765,6 +799,9 @@ struct SettingsView: View {
                             }
                         }
                     }
+                    HUDStylePreview(style: store.hudStyle)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                     Text("Compact bar shows status text; Micro capsule is glyph-only (dot while working, check when inserted).")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
@@ -798,71 +835,6 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color.dsFaint)
                 }
-    }
-
-    @ViewBuilder private var updatesCard: some View {
-                card {
-                    HStack {
-                        sectionLabel("Updates")
-                        Spacer()
-                        Text(updates.versionLine.uppercased())
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .kerning(1.0)
-                            .foregroundStyle(Color.dsFaint)
-                    }
-                    Text(updateStatusText)
-                        .font(.system(size: 13))
-                        .foregroundStyle(updateStatusIsError ? Color.dsAccent : Color.dsMuted)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button(updateButtonTitle) {
-                        switch updates.status {
-                        case .updateAvailable, .rebuildAvailable:
-                            updates.updateAndRelaunch()
-                        default:
-                            updates.check()
-                        }
-                    }
-                    .buttonStyle(GhostButtonStyle())
-                    .disabled(updateButtonDisabled)
-                    Text("Pulls the latest source from GitHub, rebuilds (tests included), and relaunches. This and model downloads are the app's only network use.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.dsFaint)
-                }
-    }
-
-    private var updateStatusText: String {
-        switch updates.status {
-        case .idle: return "Installed build \(updates.versionLine)."
-        case .checking: return "Checking for updates\u{2026}"
-        case .upToDate: return "Up to date."
-        case .updateAvailable(let n): return "\(n) new commit\(n == 1 ? "" : "s") available."
-        case .rebuildAvailable: return "Local source is newer than this build."
-        case .updating(let step): return step
-        case .failed(let message): return message
-        }
-    }
-
-    private var updateStatusIsError: Bool {
-        if case .failed = updates.status { return true }
-        return false
-    }
-
-    private var updateButtonTitle: String {
-        switch updates.status {
-        case .updateAvailable: return "Update & Relaunch"
-        case .rebuildAvailable: return "Rebuild & Relaunch"
-        case .updating: return "Updating\u{2026}"
-        case .checking: return "Checking\u{2026}"
-        case .failed: return "Retry Check"
-        default: return "Check for Updates"
-        }
-    }
-
-    private var updateButtonDisabled: Bool {
-        switch updates.status {
-        case .checking, .updating: return true
-        default: return false
-        }
     }
 
     private var header: some View {
@@ -1023,7 +995,9 @@ struct SettingsView: View {
 
     private func modelSubtitle(_ info: ModelInfo) -> String {
         let url = AppPaths.modelFile(named: info.id)
-        let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+        let onDisk = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+        // On disk once installed; otherwise the catalog's approximate download size.
+        let bytes = onDisk ?? (info.downloadSizeBytes > 0 ? info.downloadSizeBytes : nil)
         let size = bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
         var line = "\(info.tagline)  ·  Accuracy \(meter(info.accuracy))  ·  Speed \(meter(info.speed))"
         if let size { line += "  ·  \(size)" }
@@ -1050,4 +1024,225 @@ private struct StaggeredAppear: ViewModifier {
 
 private extension View {
     func staggeredAppear(_ index: Int) -> some View { modifier(StaggeredAppear(index: index)) }
+}
+
+// A static, at-scale mock of the two HUD sizes so picking a style shows what it
+// looks like rather than only naming it. Mirrors HUDController's glass card
+// (DS.glass fill, DS.line border, accent dot); the compact bar shows the
+// listening state with a label, the micro capsule collapses to the glyph.
+private struct HUDStylePreview: View {
+    let style: HUDStyle
+
+    var body: some View {
+        ZStack {
+            switch style {
+            case .compactBar:
+                HStack(spacing: 8) {
+                    Circle().fill(Color.dsAccent).frame(width: 6, height: 6)
+                    Text("Listening")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.dsPaper)
+                }
+                .frame(width: 180, height: 32)
+                .background(glass(cornerRadius: 12))
+            case .microCapsule:
+                Circle().fill(Color.dsAccent).frame(width: 8, height: 8)
+                    .frame(width: 76, height: 26)
+                    .background(glass(cornerRadius: 13))
+            }
+        }
+        .frame(height: 40)
+        .dsContentCrossfade(style)
+    }
+
+    private func glass(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(Color(nsColor: DS.glass))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.dsLine, lineWidth: 1))
+    }
+}
+
+// One row in the Audio-tab model picker. Installed models act like the old radio
+// rows (tap to make active); catalog models not on disk show a Download button with
+// live progress, a Retry on failure, and an inline error. Installed, non-active models
+// can be trashed to free space. Not a Button itself (tap-to-select is a gesture) so the
+// trailing Download/Retry/Delete controls can be real nested buttons.
+private struct ModelCatalogRow: View {
+    @ObservedObject var store: SettingsStore
+    let info: ModelInfo
+    let subtitle: String
+    let tag: (String, Color) -> AnyView
+    @State private var hovering = false
+
+    private var installed: Bool { store.installedModels.contains(info.id) }
+    private var active: Bool { store.modelName == info.id }
+    private var downloading: Bool { store.modelDownloads[info.id] != nil }
+    private var progress: Double { store.modelDownloads[info.id] ?? 0 }
+    private var error: String? { store.modelDownloadErrors[info.id] }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            leftIndicator
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(info.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(installed ? Color.dsPaper : Color.dsMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                    if info.recommended { tag("Recommended", .dsAccent) }
+                    if installed && !active { tag("Installed", .dsMuted) }
+                }
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.dsMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let error {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.dsAccent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            trailing
+        }
+        .padding(10)
+        .background(
+            active ? Color.dsInk3 : (hovering && installed ? Color.dsInk3.opacity(0.6) : Color.clear),
+            in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { if installed { store.modelName = info.id } }
+        .onHover { hovering = $0 }
+        .animation(DS.animInstant, value: hovering)
+        .animation(DS.animBase, value: active)
+    }
+
+    @ViewBuilder private var leftIndicator: some View {
+        if installed {
+            Circle()
+                .fill(active ? Color.dsAccent : Color.clear)
+                .overlay(Circle().strokeBorder(
+                    active ? Color.dsAccent : Color.dsFaint, lineWidth: 1.5))
+                .frame(width: 14, height: 14)
+        } else {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.dsFaint)
+                .frame(width: 14, height: 14)
+        }
+    }
+
+    @ViewBuilder private var trailing: some View {
+        if downloading {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.dsMuted)
+                    .frame(width: 38, alignment: .trailing)
+            }
+        } else if !installed {
+            Button(error != nil ? "Retry" : "Download") { store.downloadModel(info.id) }
+                .buttonStyle(GhostButtonStyle())
+        } else if !active {
+            Button {
+                store.deleteModel(info.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.dsMuted)
+            }
+            .buttonStyle(.dsPress)
+            .opacity(hovering ? 1 : 0)
+            .help("Move this model to the Trash")
+        }
+    }
+}
+
+// Drag-to-reorder microphone priority. Each row is a drag source and a drop
+// target; hovering one row over another reorders live via the store, which
+// rewrites micPriority to the shown order. Replaces the old promote-to-top
+// chevron so any device can be dragged to any rank.
+private struct MicPriorityList: View {
+    @ObservedObject var store: SettingsStore
+    @State private var dragging: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(store.connectedMics) { mic in
+                row(mic)
+                    .opacity(dragging == mic.uid ? 0.4 : 1)
+                    .onDrag {
+                        dragging = mic.uid
+                        return NSItemProvider(object: mic.uid as NSString)
+                    }
+                    .onDrop(
+                        of: [.text],
+                        delegate: MicDropDelegate(target: mic.uid, store: store, dragging: $dragging))
+            }
+        }
+    }
+
+    private func row(_ mic: AudioInputDevice) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.dsFaint)
+                .frame(width: 26, height: 26)
+            Text(mic.name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.dsPaper)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+            Spacer()
+            if store.activeMicUID == mic.uid {
+                badge("Active", color: .dsAccent)
+            } else if store.activeMicUID == nil, mic.uid == store.connectedMics.first?.uid {
+                badge("System default", color: .dsMuted)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .kerning(1.0)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .frame(height: 20)
+            .background(Color.dsInk2, in: Capsule())
+            .overlay(Capsule().strokeBorder(color.opacity(0.4), lineWidth: 1))
+            .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct MicDropDelegate: DropDelegate {
+    let target: String
+    let store: SettingsStore
+    @Binding var dragging: String?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target,
+              let from = store.connectedMics.firstIndex(where: { $0.uid == dragging }),
+              let to = store.connectedMics.firstIndex(where: { $0.uid == target }) else { return }
+        withAnimation(DS.animBase) {
+            store.moveMic(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
 }

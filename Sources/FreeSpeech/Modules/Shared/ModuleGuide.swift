@@ -25,7 +25,7 @@ enum ModuleGuides {
     private static let guides: [String: ModuleGuide] = [
         ModuleCatalog.clop.id: ModuleGuide(steps: [
             .init(icon: "doc.on.clipboard", title: "Compress on copy",
-                  detail: "Copy an image, video, or PDF and Clop shrinks it in place; the toast shows what it saved."),
+                  detail: "Copy an image, video, or PDF and Simplify shrinks it in place; the toast shows what it saved."),
             .init(icon: "hand.draw", title: "Or drop to optimize",
                   detail: "Drag files onto the menu-bar icon, or the drop zone that appears while you drag."),
             .init(icon: "slider.horizontal.3", title: "Tune quality and rules",
