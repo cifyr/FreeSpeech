@@ -1867,6 +1867,20 @@ enum RichTextImageSupport {
     }
 }
 
+// Draws the insertion caret at the font's glyph height instead of the full
+// line-fragment height, which lineSpacing (and line-height multiples) inflate.
+// Glyphs sit at the top of the fragment, so the shortened caret anchors to the
+// top of the rect AppKit hands us.
+final class NotebookTextView: NSTextView {
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        var r = rect
+        let font = (typingAttributes[.font] as? NSFont) ?? .systemFont(ofSize: 13)
+        let glyphHeight = layoutManager?.defaultLineHeight(for: font) ?? (font.ascender - font.descender)
+        if glyphHeight > 0, glyphHeight < r.height { r.size.height = ceil(glyphHeight) }
+        super.drawInsertionPoint(in: r, color: color, turnedOn: flag)
+    }
+}
+
 struct RichTextEditor: NSViewRepresentable {
     @ObservedObject var model: NotebookViewModel
     @ObservedObject var proxy: RichTextEditorProxy
@@ -1876,8 +1890,21 @@ struct RichTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let tv = scroll.documentView as! NSTextView
+        // NSTextView(frame:) wires and owns its own text system, so a subclass is
+        // safe here (unlike scrollableTextView(), which hands back a base class).
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
+        let tv = NotebookTextView(frame: .zero)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.minSize = .zero
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = tv
         tv.delegate = context.coordinator
         tv.isRichText = true
         // Accept pasted and dragged-in images as attachments; clamped to width
