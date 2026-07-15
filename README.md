@@ -67,6 +67,7 @@ Coming soon: **Ice** (menu bar icon manager), **Cotypist** (on-device inline tex
 
 ```bash
 brew tap cifyr/freekit
+brew trust cifyr/freekit                        # Homebrew 6+ requires trusting a third-party tap
 brew install --cask --no-quarantine freekit
 ```
 

@@ -75,7 +75,8 @@ in this repo. Keep it in sync there so the source of truth is versioned with the
 
 ```bash
 brew tap cifyr/freekit
-brew install --cask --no-quarantine freekit     # --no-quarantine until notarized
+brew trust cifyr/freekit                         # Homebrew 6+ gates third-party cask code behind a trust step
+brew install --cask --no-quarantine freekit      # --no-quarantine until notarized
 ```
 
 `brew tap cifyr/freekit` resolves to `github.com/cifyr/homebrew-freekit`
