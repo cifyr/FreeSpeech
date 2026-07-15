@@ -320,12 +320,14 @@ final class NotebookConfig: ObservableObject {
         }
     }
 
-    // Extra space between lines so returns breathe. lineSpacing (gap after each
-    // line) rather than lineHeightMultiple (which scales the whole line box and
-    // stretches the insertion caret to match) — the caret stays text height.
+    // Space after each Return so paragraphs breathe, via paragraphSpacing rather
+    // than lineSpacing/lineHeightMultiple. Those grow every line fragment and the
+    // TextKit-2 caret is drawn at fragment height, so they stretch the cursor;
+    // paragraphSpacing adds the gap between paragraphs only, leaving wrapped lines
+    // tight and the default caret at its natural text height — no custom caret.
     static func bodyParagraphStyle(fontSize: CGFloat) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = (fontSize * 0.55).rounded()
+        style.paragraphSpacing = (fontSize * 0.9).rounded()
         return style
     }
 
@@ -1758,7 +1760,7 @@ final class RichTextEditorProxy: ObservableObject {
         let style = NSMutableParagraphStyle()
         style.headIndent = allBulleted ? 0 : 18
         style.defaultTabInterval = 18
-        style.lineSpacing = (((tv.typingAttributes[.font] as? NSFont)?.pointSize ?? 13) * 0.55).rounded()
+        style.paragraphSpacing = (((tv.typingAttributes[.font] as? NSFont)?.pointSize ?? 13) * 0.9).rounded()
         if let first = paragraphStarts.first {
             // Marker edits shifted everything after the first paragraph start;
             // recompute the affected span before styling it.
@@ -1867,31 +1869,6 @@ enum RichTextImageSupport {
     }
 }
 
-// Draws the insertion caret at the text's own height (ascender→descender)
-// instead of the full line-fragment height, which lineSpacing inflates. Glyphs
-// sit at the top of the fragment, so the shortened caret keeps the rect's top
-// origin and the extra line gap stays below it (matching Raycast's look).
-// Requires TextKit 1 (see makeNSView): TextKit 2's insertion indicator ignores
-// this override.
-final class NotebookTextView: NSTextView {
-    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
-        var r = rect
-        let font = (typingAttributes[.font] as? NSFont) ?? .systemFont(ofSize: 13)
-        // Anchor the caret to the glyph box (cap top → descender), not the line
-        // fragment top: the fragment includes leading above the caps and the
-        // lineSpacing gap below, both of which made the caret read as too tall
-        // and floating above the text. Glyphs sit at the fragment top.
-        let capTopInset = max(0, font.ascender - font.capHeight)
-        let caretHeight = ceil(font.capHeight - font.descender)
-        if caretHeight > 0, caretHeight + capTopInset <= r.height {
-            r.origin.y = rect.origin.y + capTopInset
-            r.size.height = caretHeight
-        }
-        r.size.width = 2  // Raycast-ish weight; 1pt read as too thin.
-        super.drawInsertionPoint(in: r, color: color, turnedOn: flag)
-    }
-}
-
 struct RichTextEditor: NSViewRepresentable {
     @ObservedObject var model: NotebookViewModel
     @ObservedObject var proxy: RichTextEditorProxy
@@ -1901,17 +1878,11 @@ struct RichTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        // NSTextView(frame:) wires and owns its own text system, so a subclass is
-        // safe here (unlike scrollableTextView(), which hands back a base class).
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
         scroll.autohidesScrollers = true
-        let tv = NotebookTextView(frame: .zero)
-        // Force TextKit 1 so our drawInsertionPoint override is used; TextKit 2
-        // (the macOS 26 default) draws the caret via NSTextInsertionIndicator and
-        // ignores it, leaving the caret full line-fragment height.
-        _ = tv.layoutManager
+        let tv = NSTextView(frame: .zero)
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
         tv.autoresizingMask = [.width]

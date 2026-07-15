@@ -92,7 +92,9 @@ struct DSToggleRow: View {
         }
         .contentShape(Rectangle())
         .dsHoverHighlight(cornerRadius: DS.radiusKeycap)
-        .onTapGesture { isOn.toggle() }
+        // withAnimation here (not on DSToggle) so a row tap drives the same
+        // metaball glide as tapping the switch directly — see DS.animToggle.
+        .onTapGesture { withAnimation(DS.animToggle()) { isOn.toggle() } }
     }
 }
 

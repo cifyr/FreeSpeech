@@ -165,15 +165,14 @@ struct DSToggle: View {
 
     var body: some View {
         Button {
-            isOn.toggle()
+            withAnimation(DS.animToggle(reduceMotion: reduceMotion)) {
+                isOn.toggle()
+            }
         } label: {
             DSToggleBody(progress: isOn ? 1 : 0)
                 .frame(width: 56, height: 30)
         }
         .buttonStyle(.plain)
-        // .smooth is a no-overshoot spring: the thumb glides across and settles
-        // without the wobble a low-damping spring left on the metaball.
-        .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: isOn)
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 }
@@ -319,13 +318,14 @@ private struct DSSliderBody: View {
     // Thumb center, inset by its radius at both ends so it stays on the track.
     private var knob: CGFloat { thumbRadius + fraction * (width - thumbDiameter) }
 
-    // The neck+blob merge is full mid-travel and tapers to nothing at both ends
-    // (sin is 0 at 0 and 1). So at 0% and 100% only the clean circle shows — no
-    // neck stub poking past the rounded track end, and the blob shrinks to the
-    // thumb's own radius so it can't clip against the edge.
-    private var merge: CGFloat { sin(.pi * min(max(fraction, 0), 1)) }
+    // Gel stays full across the interior and eases to nothing only in the last
+    // ~10% at each end — so at 0%/100% just the clean circle shows (no neck stub
+    // past the rounded cap, no blob clipping the edge) while everywhere else the
+    // blob reads as a real gel ball. The old sin() taper peaked only at the exact
+    // midpoint, leaving the metaball too small to see at any normal value.
+    private var merge: CGFloat { min(min(fraction, 1 - fraction) / 0.1, 1) }
     private var neckWidth: CGFloat { 36 * merge }
-    private var blobRadius: CGFloat { thumbRadius + 4 * merge }
+    private var blobRadius: CGFloat { thumbRadius + 6 * merge }
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -436,6 +436,15 @@ extension DS {
     // (dampingFraction 1) so it reads physical but never overshoots or bounces.
     static func animExpand(reduceMotion rm: Bool = reduceMotion) -> Animation? {
         rm ? nil : .spring(response: 0.34, dampingFraction: 1)
+    }
+
+    // The gel toggle's thumb travel. Must be applied via withAnimation at the
+    // mutation site, not .animation(_:value:) — an implicit value animation does
+    // not propagate into DSToggleBody's Canvas animatableData, so the metaball
+    // snaps to its end state instead of gliding. .smooth is a no-overshoot spring
+    // so the thumb settles without the wobble a low-damping spring left on the goo.
+    static func animToggle(reduceMotion rm: Bool = reduceMotion) -> Animation? {
+        rm ? nil : .smooth(duration: 0.32)
     }
 
     // The one symmetric exception: a slow breathing pulse for a live/active dot.
