@@ -1908,6 +1908,9 @@ struct RichTextEditor: NSViewRepresentable {
         tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = tv
         tv.delegate = context.coordinator
+        // Accessing layoutManager forces TextKit 1, whose NSLayoutManagerDelegate
+        // lets us add the inter-line gap without inflating the caret.
+        tv.layoutManager?.delegate = context.coordinator
         tv.isRichText = true
         // Accept pasted and dragged-in images as attachments; clamped to width
         // by the coordinator's change/load passes.
@@ -1960,7 +1963,7 @@ struct RichTextEditor: NSViewRepresentable {
         coordinator.suppressChangeCallback = false
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate {
         let model: NotebookViewModel
         weak var textView: NSTextView?
         var loadedGeneration = -1
@@ -1977,6 +1980,28 @@ struct RichTextEditor: NSViewRepresentable {
             // A pasted/dropped image lands here at native size; clamp it to width.
             RichTextImageSupport.clampOversized(in: tv)
             model.textDidChange(tv.attributedString())
+        }
+
+        // Adds the line gap by growing each line's fragment rect only, leaving the
+        // glyph used rect and baseline untouched. The caret tracks the used
+        // (glyph) rect, so it stays text height while lines breathe — the one way
+        // to add line height without stretching the macOS 26 caret.
+        func layoutManager(
+            _ layoutManager: NSLayoutManager,
+            shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+            lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+            baselineOffset: UnsafeMutablePointer<CGFloat>,
+            in textContainer: NSTextContainer,
+            forGlyphRange glyphRange: NSRange
+        ) -> Bool {
+            let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            let font = (layoutManager.textStorage.flatMap {
+                charRange.location < $0.length
+                    ? $0.attribute(.font, at: charRange.location, effectiveRange: nil) as? NSFont
+                    : nil
+            }) ?? .systemFont(ofSize: model.config.fontSize)
+            lineFragmentRect.pointee.size.height += (font.pointSize * 0.6).rounded()
+            return true
         }
     }
 }
