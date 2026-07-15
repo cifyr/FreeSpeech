@@ -115,6 +115,7 @@ public final class Settings {
         static let appProfiles = "appPostProcessingProfiles"
         static let splitSpeakers = "splitSpeakersEnabled"
         static let onboarded = "hasCompletedOnboarding"
+        static let suiteOnboarded = "hasCompletedSuiteOnboarding"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -308,6 +309,13 @@ public final class Settings {
     public var hasCompletedOnboarding: Bool {
         get { defaults.bool(forKey: Key.onboarded) }
         set { defaults.set(newValue, forKey: Key.onboarded) }
+    }
+
+    // App-level (suite) first-run setup: gates the SuiteOnboardingWindow the same
+    // way hasCompletedOnboarding gates Speech's own guided setup.
+    public var hasCompletedSuiteOnboarding: Bool {
+        get { defaults.bool(forKey: Key.suiteOnboarded) }
+        set { defaults.set(newValue, forKey: Key.suiteOnboarded) }
     }
 }
 

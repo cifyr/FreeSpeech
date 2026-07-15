@@ -161,7 +161,7 @@ final class HyperKeyModule: AppModule, EventRewriter {
 }
 
 // Compose any modifier mix for the hold behavior; presets are shortcuts that
-// set the same checkboxes.
+// set the same modifier chips.
 private struct HyperKeySettingsPane: View {
     @State private var holdFlags: UInt64
     @State private var tapEscape: Bool
@@ -175,45 +175,25 @@ private struct HyperKeySettingsPane: View {
 
     private var modifiers: HotkeyModifiers { HotkeyModifiers(rawValue: holdFlags) }
 
+    private var behaviorName: String {
+        if modifiers.isEmpty { return "Nothing bound" }
+        if modifiers == .hyper { return "Hyper key" }
+        if modifiers == [.command] { return "Command" }
+        return "Custom modifiers"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 14) {
-                DSKeycap(label: "caps lock") {
-                    Image(systemName: "capslock.fill")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color.dsMuted)
-                }
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.dsAccent.opacity(0.7))
-                VStack(alignment: .leading, spacing: 6) {
-                    DSSectionLabel("Hold acts as")
-                    Text(modifiers.symbols.isEmpty ? "nothing" : modifiers.symbols)
-                        .font(.system(size: 18, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(modifiers.symbols.isEmpty ? Color.dsFaint : Color.dsAccent)
-                        .dsContentCrossfade(modifiers.symbols)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            hero
+            behavior
+            DSSettingsCard(title: "Tap") {
+                DSToggleRow(
+                    title: "Tap alone sends Escape",
+                    caption: "A quick press with no other key acts as the Escape key.",
+                    isOn: Binding(
+                        get: { tapEscape },
+                        set: { tapEscape = $0; commit() }))
             }
-            HStack(spacing: 8) {
-                DSChip(title: "\u{2726} Hyper", selected: modifiers == .hyper) {
-                    setFlags(HotkeyModifiers.hyper)
-                }
-                DSChip(title: "\u{2318} Command", selected: modifiers == [.command]) {
-                    setFlags([.command])
-                }
-            }
-            HStack(spacing: 14) {
-                modifierCheckbox("\u{2318} Command", .command)
-                modifierCheckbox("\u{2325} Option", .option)
-                modifierCheckbox("\u{2303} Control", .control)
-                modifierCheckbox("\u{21E7} Shift", .shift)
-            }
-            DSToggleRow(
-                title: "Tap alone sends Escape",
-                caption: "A quick press with no other key acts as the Escape key.",
-                isOn: Binding(
-                    get: { tapEscape },
-                    set: { tapEscape = $0; commit() }))
             Text("The \u{2726} hyper layer (all four modifiers) is free real estate: no app ships shortcuts on it, so it is yours for global hotkeys. Applied while this module is on; removed when off or the app quits.")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.dsFaint)
@@ -221,18 +201,65 @@ private struct HyperKeySettingsPane: View {
         }
     }
 
-    private func modifierCheckbox(_ label: String, _ modifier: HotkeyModifiers) -> some View {
-        HStack(spacing: 6) {
-            DSCheckbox(isOn: Binding(
-                get: { modifiers.contains(modifier) },
-                set: { on in
-                    var m = modifiers
-                    if on { m.insert(modifier) } else { m.remove(modifier) }
-                    setFlags(m)
-                }))
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.dsPaper)
+    // The centerpiece: the Caps Lock keycap flowing into a large live preview of
+    // what it becomes, so the current mapping reads at a glance.
+    private var hero: some View {
+        DSSettingsCard(title: "Caps Lock becomes") {
+            HStack(alignment: .center, spacing: 16) {
+                DSKeycap(label: "caps lock") {
+                    Image(systemName: "capslock.fill")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Color.dsMuted)
+                }
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.dsAccent.opacity(0.7))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(modifiers.isEmpty ? "does nothing" : modifiers.symbols)
+                        .font(.system(size: modifiers.isEmpty ? 22 : 40, weight: .semibold))
+                        .foregroundStyle(modifiers.isEmpty ? Color.dsFaint : Color.dsAccent)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .dsContentCrossfade(modifiers.symbols)
+                    Text(behaviorName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.dsMuted)
+                        .dsContentCrossfade(behaviorName)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var behavior: some View {
+        DSSettingsCard(title: "Hold behavior") {
+            DSSectionLabel("Presets")
+            HStack(spacing: 8) {
+                DSChip(title: "\u{2726} Hyper", selected: modifiers == .hyper) {
+                    setFlags(.hyper)
+                }
+                DSChip(title: "\u{2318} Command", selected: modifiers == [.command]) {
+                    setFlags([.command])
+                }
+            }
+            DSSectionLabel("Modifiers")
+            LazyVGrid(
+                columns: [GridItem(.flexible()), GridItem(.flexible())],
+                spacing: 8
+            ) {
+                modifierChip("\u{2318} Command", .command)
+                modifierChip("\u{2325} Option", .option)
+                modifierChip("\u{2303} Control", .control)
+                modifierChip("\u{21E7} Shift", .shift)
+            }
+        }
+    }
+
+    private func modifierChip(_ label: String, _ modifier: HotkeyModifiers) -> some View {
+        DSChip(title: label, selected: modifiers.contains(modifier)) {
+            var m = modifiers
+            if m.contains(modifier) { m.remove(modifier) } else { m.insert(modifier) }
+            setFlags(m)
         }
     }
 

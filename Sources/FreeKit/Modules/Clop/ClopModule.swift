@@ -49,6 +49,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         static let minSavings = "minSavings"      // fraction, not percent
         static let skipBelowKB = "skipBelowKB"
         static let destination = "destination"
+        static let keepBackups = "keepBackups"
         static let videoPreset = "videoPreset"
         static let totalSavedBytes = "totalSavedBytes"
         static let totalItems = "totalItems"
@@ -101,6 +102,10 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
             .flatMap(ClopVideoPreset.init) ?? .hd1080
     }
 
+    private var keepBackups: Bool {
+        settings.moduleBool(id: info.id, key: Key.keepBackups) ?? true
+    }
+
     static var backupsDirectory: URL {
         AppPaths.appSupport.appendingPathComponent("clop-backups", isDirectory: true)
     }
@@ -148,7 +153,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         if visible {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.button?.toolTip = "Clop compressor \u{2014} drop files here to optimize"
+                item.button?.toolTip = "Simplify \u{2014} drop files here to compress"
                 item.button?.wantsLayer = true  // lets the icon-state swap crossfade
                 if let button = item.button {
                     let drop = ClopDropView(frame: button.bounds)
@@ -758,10 +763,12 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
 
     private func backUp(_ url: URL) throws -> URL {
         let directory = Self.backupsDirectory
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let backup = ClopPlan.backupURL(for: url, in: directory) {
             FileManager.default.fileExists(atPath: $0.path)
         }
+        // Backups off: skip the copy (undo won't be able to restore this run).
+        guard keepBackups else { return backup }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.copyItem(at: url, to: backup)
         return backup
     }
@@ -845,8 +852,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         lastIconState = state
         button.image = NSImage(
             systemSymbolName: paused ? "pause.rectangle" : "rectangle.compress.vertical",
-            accessibilityDescription: working > 0 ? "Clop optimizing"
-                : (paused ? "Clop paused" : "Clop watching clipboard"))
+            accessibilityDescription: working > 0 ? "Simplify compressing"
+                : (paused ? "Simplify paused" : "Simplify watching clipboard"))
         // Accent tint = live activity, matching the suite's use of red for "hot".
         button.contentTintColor = working > 0 ? DS.accent : nil
         button.appearsDisabled = paused
@@ -861,8 +868,8 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         button.attributedTitle = NSAttributedString(
             string: progressText,
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
-        button.toolTip = working > 0 ? "Clop: optimizing"
-            : (paused ? "Clop: paused" : "Clop: watching clipboard")
+        button.toolTip = working > 0 ? "Simplify: compressing"
+            : (paused ? "Simplify: paused" : "Simplify: watching clipboard")
     }
 
     // MARK: - Menu
@@ -927,7 +934,7 @@ final class ClopModule: NSObject, AppModule, NSMenuDelegate {
         menu.addItem(undo)
         menu.addItem(.separator())
         let settingsItem = NSMenuItem(
-            title: "Clop Settings\u{2026}", action: #selector(menuOpenSettings), keyEquivalent: "")
+            title: "Simplify Settings\u{2026}", action: #selector(menuOpenSettings), keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
     }
@@ -1056,6 +1063,13 @@ private struct ClopSettingsPane: View {
     @State private var showToast: Bool
     @State private var toastDuration: Double
     @State private var toastLocation: ClopToastLocation
+    @State private var keepBackups: Bool
+    @State private var tab: ClopTab = .downloads
+
+    // Downloads: where files come from and go. Defaults: the compression presets.
+    private enum ClopTab: String, CaseIterable {
+        case downloads = "Downloads", defaults = "Defaults"
+    }
 
     init(model: ClopPaneModel, settings: Settings) {
         self.model = model
@@ -1080,9 +1094,34 @@ private struct ClopSettingsPane: View {
         _toastDuration = State(initialValue: settings.moduleDouble(id: id, key: ClopModule.Key.toastDuration) ?? 2.6)
         _toastLocation = State(initialValue: settings.moduleString(id: id, key: ClopModule.Key.toastLocation)
             .flatMap(ClopToastLocation.init) ?? .bottomCenter)
+        _keepBackups = State(initialValue: settings.moduleBool(id: id, key: ClopModule.Key.keepBackups) ?? true)
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            tabRow
+            switch tab {
+            case .downloads: downloadsTab
+            case .defaults: defaultsTab
+            }
+        }
+    }
+
+    private var tabRow: some View {
+        ZStack(alignment: .bottom) {
+            Rectangle().fill(Color.dsLine).frame(height: 1)
+            HStack(spacing: 24) {
+                ForEach(ClopTab.allCases, id: \.self) { candidate in
+                    DSTabButton(title: candidate.rawValue, selected: tab == candidate) {
+                        tab = candidate
+                    }
+                }
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder private var downloadsTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Watch clipboard") {
                 DSToggleRow(
@@ -1102,6 +1141,13 @@ private struct ClopSettingsPane: View {
                     .foregroundStyle(Color.dsFaint)
             }
 
+            filesCard
+            controlCard
+        }
+    }
+
+    @ViewBuilder private var defaultsTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Images") {
                 optionRow("Quality") {
                     chip("Lossless", selected: lossless) {
@@ -1221,10 +1267,13 @@ private struct ClopSettingsPane: View {
                     }
                 }
             }
+        }
+    }
 
-            DSSettingsCard(title: "Files") {
-                optionRow("Output") {
-                    ForEach(ClopPlan.FileDestination.allCases, id: \.rawValue) { value in
+    @ViewBuilder private var filesCard: some View {
+        DSSettingsCard(title: "Files") {
+            optionRow("Output") {
+                ForEach(ClopPlan.FileDestination.allCases, id: \.rawValue) { value in
                         chip(value.displayName, selected: destination == value) {
                             destination = value
                             settings.setModuleString(value.rawValue, id: moduleID, key: ClopModule.Key.destination)
@@ -1243,23 +1292,35 @@ private struct ClopSettingsPane: View {
                 Text("Alongside writes \u{201C}name (clopped)\u{201D} next to the original. Replace backs the original up first; converting formats renames honestly, so shot.png becomes shot.jpg. Files can also be dropped onto the menu bar icon.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
-                Button("Show Backup Folder") { model.module?.revealBackupsFolder() }
-                    .buttonStyle(GhostButtonStyle())
+                DSToggleRow(
+                    title: "Keep a backup of originals",
+                    caption: "Save the original before optimizing, so you can restore it.",
+                    isOn: Binding(
+                        get: { keepBackups },
+                        set: {
+                            keepBackups = $0
+                            settings.setModuleBool($0, id: moduleID, key: ClopModule.Key.keepBackups)
+                        }))
+                if keepBackups {
+                    Button("Show Backup Folder") { model.module?.revealBackupsFolder() }
+                        .buttonStyle(GhostButtonStyle())
+                }
             }
+        }
 
-            DSSettingsCard(title: "Control") {
-                HotkeyRecorderButton(
-                    label: "Optimize clipboard",
-                    preset: settings.moduleHotkey(id: moduleID, defaultPreset: .disabled),
-                    onChange: { model.module?.updateHotkey($0) })
-                HotkeyRecorderButton(
-                    label: "Optimize Finder selection",
-                    preset: model.module?.finderHotkey ?? .disabled,
-                    onChange: { model.module?.updateFinderHotkey($0) })
-                Text("The Finder shortcut reads the current selection (macOS asks once to allow controlling Finder). Right-clicking files also offers Services > Optimize with Clop.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.dsFaint)
-            }
+    @ViewBuilder private var controlCard: some View {
+        DSSettingsCard(title: "Control") {
+            HotkeyRecorderButton(
+                label: "Optimize clipboard",
+                preset: settings.moduleHotkey(id: moduleID, defaultPreset: .disabled),
+                onChange: { model.module?.updateHotkey($0) })
+            HotkeyRecorderButton(
+                label: "Optimize Finder selection",
+                preset: model.module?.finderHotkey ?? .disabled,
+                onChange: { model.module?.updateFinderHotkey($0) })
+            Text("The Finder shortcut reads the current selection (macOS asks once to allow controlling Finder). Right-clicking files also offers Services > Optimize with Simplify.")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.dsFaint)
         }
     }
 

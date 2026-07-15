@@ -117,4 +117,29 @@ final class StatsFormattingTests: XCTestCase {
         XCTAssertEqual(StatsFormatting.deviceIconSymbolName(for: "Caden's Apple Watch"), "applewatch")
         XCTAssertEqual(StatsFormatting.deviceIconSymbolName(for: "Unknown Gadget"), "dot.radiowaves.left.and.right")
     }
+
+    func testLoadLevelRisingThresholds() {
+        let zones = StatsFormatting.loadZones(forMetric: "cpu")
+        XCTAssertEqual(StatsFormatting.loadLevel(0.4, zones: zones), .normal)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.6, zones: zones), .elevated)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.75, zones: zones), .elevated)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.8, zones: zones), .high)
+        XCTAssertEqual(StatsFormatting.loadLevel(1.5, zones: zones), .high)
+    }
+
+    func testLoadLevelMemoryZonesRunHotter() {
+        let zones = StatsFormatting.loadZones(forMetric: "memory")
+        XCTAssertEqual(StatsFormatting.loadLevel(0.7, zones: zones), .normal)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.85, zones: zones), .elevated)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.96, zones: zones), .high)
+    }
+
+    func testLoadLevelBatteryReversed() {
+        let zones = StatsFormatting.loadZones(forMetric: "battery")
+        XCTAssertTrue(zones.reversed)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.5, zones: zones), .normal)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.25, zones: zones), .elevated)
+        XCTAssertEqual(StatsFormatting.loadLevel(0.1, zones: zones), .high)
+        XCTAssertEqual(StatsFormatting.loadLevel(-0.2, zones: zones), .high)
+    }
 }

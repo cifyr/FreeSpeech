@@ -79,9 +79,20 @@ final class SpeechModule: NSObject, AppModule {
             }
         }
         loadModel()
-        if !settings.hasCompletedOnboarding {
+        // Speech's own guided setup waits until the suite onboarding has finished,
+        // so enabling Speech mid-suite-flow doesn't stack a second panel over it;
+        // AppDelegate re-triggers it via showOnboardingIfNeeded() when the suite
+        // window closes. Once the suite is done, enabling Speech shows it inline.
+        if !settings.hasCompletedOnboarding, settings.hasCompletedSuiteOnboarding {
             onboardingWindow.show()
         }
+    }
+
+    // Called after the suite onboarding closes, so a Speech enabled during that
+    // flow still gets its detailed walkthrough — just not on top of the suite window.
+    func showOnboardingIfNeeded() {
+        guard activated, !settings.hasCompletedOnboarding else { return }
+        onboardingWindow.show()
     }
 
     func deactivate() {

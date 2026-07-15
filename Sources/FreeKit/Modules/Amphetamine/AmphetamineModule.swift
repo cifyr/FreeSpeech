@@ -65,6 +65,7 @@ final class AmphetamineModule: NSObject, AppModule {
     enum Key {
         static let keepDisplayAwake = "keepDisplayAwake"
         static let keepAwakeWithLidClosed = "keepAwakeWithLidClosed"
+        static let showsIconWithTimer = "showsIconWithTimer"
         // Persisted the instant we disable clamshell sleep, cleared the instant
         // we restore it — so a crash mid-session leaves a trail activate() can
         // find and clean up, instead of a Mac stuck never sleeping on lid close.
@@ -80,6 +81,20 @@ final class AmphetamineModule: NSObject, AppModule {
     var keepDisplayAwake: Bool {
         get { settings.moduleBool(id: info.id, key: Key.keepDisplayAwake) ?? true }
         set { settings.setModuleBool(newValue, id: info.id, key: Key.keepDisplayAwake) }
+    }
+
+    var showsIconWithTimer: Bool {
+        get { settings.moduleBool(id: info.id, key: Key.showsIconWithTimer) ?? true }
+        set {
+            settings.setModuleBool(newValue, id: info.id, key: Key.showsIconWithTimer)
+            updateStatusIcon()
+        }
+    }
+
+    // Drives the settings chips' selected state: the chip for the running
+    // session's duration lights up, nothing is selected when idle.
+    func isActivePreset(_ duration: AmphetaminePlan.Duration) -> Bool {
+        activePlan?.duration == duration
     }
 
     var keepAwakeWithLidClosed: Bool {
@@ -438,7 +453,7 @@ final class AmphetamineModule: NSObject, AppModule {
         for duration in AmphetaminePlan.Duration.presets {
             let title = duration.seconds == nil
                 ? "Stay Awake Until Stopped"
-                : "Keep awake \(duration.displayName)"
+                : duration.displayName
             let item = NSMenuItem(
                 title: title,
                 action: #selector(menuStartSession(_:)), keyEquivalent: "")
@@ -511,14 +526,10 @@ final class AmphetamineModule: NSObject, AppModule {
             systemSymbolName: info.symbolName,
             accessibilityDescription: isSessionActive ? "Amphetamine awake" : "Amphetamine idle")
         image?.isTemplate = true
-        button.image = image
-        // nil at rest inherits the system's default template color — the
-        // same one every other menu-bar icon in the suite uses, since none
-        // of them override contentTintColor either. A fixed gray tint here
-        // was the one icon in the menu bar that didn't match its neighbors.
-        // Accent only while a session actually holds the Mac awake, the
-        // suite's one "this is live" signal.
-        button.contentTintColor = isSessionActive ? DS.accent : nil
+        // Always the plain template color — every other suite menu-bar icon
+        // leaves contentTintColor nil, and the countdown text already signals
+        // an active session, so tinting the glyph accent was the odd one out.
+        button.contentTintColor = nil
         let title: String
         if let plan = activePlan {
             title = " " + AmphetaminePlan.countdownText(
@@ -526,6 +537,9 @@ final class AmphetamineModule: NSObject, AppModule {
         } else {
             title = ""
         }
+        // When a countdown is showing, the user can opt to drop the glyph and
+        // keep just the time; the glyph always returns when idle.
+        button.image = (isSessionActive && !showsIconWithTimer) ? nil : image
         button.attributedTitle = NSAttributedString(
             string: title,
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])
@@ -570,7 +584,8 @@ private struct AmphetamineSettingsPane: View {
             DSSettingsCard(title: "Keep awake") {
                 HStack(spacing: 8) {
                     ForEach(Array(AmphetaminePlan.Duration.presets.enumerated()), id: \.offset) { _, duration in
-                        DSChip(title: duration.displayName, selected: false) {
+                        DSChip(title: duration.displayName,
+                               selected: model.module?.isActivePreset(duration) ?? false) {
                             model.module?.startSession(duration: duration)
                         }
                         .fixedSize()
@@ -586,15 +601,21 @@ private struct AmphetamineSettingsPane: View {
                 DSToggleRow(
                     title: "Keep the display awake too",
                     caption: "Off keeps only the system awake: the screen may still dim and sleep.",
-                    isOn: Binding(
-                        get: { model.module?.keepDisplayAwake ?? true },
-                        set: { model.module?.keepDisplayAwake = $0 }))
+                    isOn: optionBinding(
+                        { model.module?.keepDisplayAwake ?? true },
+                        { model.module?.keepDisplayAwake = $0 }))
                 DSToggleRow(
                     title: "Keep awake with the lid closed",
                     caption: "Keeps running with the lid shut and no external display — no password needed. The screen won't lock and video keeps playing. Off AC it can warm up in a bag, so the session auto-ends at 20% battery.",
-                    isOn: Binding(
-                        get: { model.module?.keepAwakeWithLidClosed ?? false },
-                        set: { model.module?.keepAwakeWithLidClosed = $0 }))
+                    isOn: optionBinding(
+                        { model.module?.keepAwakeWithLidClosed ?? false },
+                        { model.module?.keepAwakeWithLidClosed = $0 }))
+                DSToggleRow(
+                    title: "Show icon with timer",
+                    caption: "Hide the pills glyph while the countdown is showing.",
+                    isOn: optionBinding(
+                        { model.module?.showsIconWithTimer ?? true },
+                        { model.module?.showsIconWithTimer = $0 }))
                 Text("Applies to sessions started after the change.")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.dsFaint)
@@ -618,6 +639,15 @@ private struct AmphetamineSettingsPane: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    // The module's option flags are plain stored properties, not @Published, so
+    // toggling one leaves the switch showing its old state until some unrelated
+    // publish (starting a session) refreshes the pane. Nudging objectWillChange
+    // on write makes the switch reflect the tap immediately.
+    private func optionBinding(_ get: @escaping () -> Bool,
+                               _ set: @escaping (Bool) -> Void) -> Binding<Bool> {
+        Binding(get: get, set: { set($0); model.objectWillChange.send() })
     }
 
     private var statusTitle: String {

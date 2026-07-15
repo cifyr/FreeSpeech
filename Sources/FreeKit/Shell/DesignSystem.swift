@@ -11,8 +11,11 @@ enum DS {
     static let ink3 = NSColor(srgbRed: 0.149, green: 0.149, blue: 0.184, alpha: 1)   // 26262F
     static let line = NSColor(srgbRed: 0.165, green: 0.165, blue: 0.200, alpha: 1)   // 2A2A33
     static let paper = NSColor(srgbRed: 0.961, green: 0.961, blue: 0.941, alpha: 1)  // F5F5F0
-    static let muted = NSColor(srgbRed: 0.557, green: 0.557, blue: 0.600, alpha: 1)  // 8E8E99
-    static let faint = NSColor(srgbRed: 0.333, green: 0.333, blue: 0.373, alpha: 1)  // 55555F
+    // Lifted from the reference's 8E8E99/55555F: those were picked against flat
+    // ink, and the duotone wash sits light enough behind settings panes that
+    // secondary text stopped carrying. These clear ~4.5:1 and ~3:1 on ink0.
+    static let muted = NSColor(srgbRed: 0.678, green: 0.678, blue: 0.722, alpha: 1)  // ADADB8
+    static let faint = NSColor(srgbRed: 0.518, green: 0.518, blue: 0.565, alpha: 1)  // 84848F
     static var accent: NSColor { AppearanceManager.shared.accentColor }
     static var accentDim: NSColor { AppearanceManager.shared.accentDimColor }
     static let glass = NSColor(srgbRed: 0.075, green: 0.075, blue: 0.094, alpha: 0.85)
@@ -160,47 +163,72 @@ struct DSToggle: View {
     @Binding var isOn: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // Ported straight from the dedicated Toggle/Slider reference's SVG,
-    // which (unlike the general theme file) displays its 56x30 viewBox at
-    // 1:1 — no downscale to account for this time. A 56x30 canvas centers a
-    // 50x16 rx8 track automatically (ZStack's default center alignment
-    // gives the same 3pt/7pt inset the SVG hand-sets), and the 20-diameter
-    // thumb's on/off centers (41/15) are the reference's own hand-placed
-    // knobCx values, not derived from the track math — .position() places
-    // it exactly rather than approximating via padding.
-    private let width: CGFloat = 56
-    private let height: CGFloat = 30
-    private let trackWidth: CGFloat = 50
-    private let trackHeight: CGFloat = 16
-    private let thumbDiameter: CGFloat = 20
-    private let knobOffX: CGFloat = 15
-    private let knobOnX: CGFloat = 41
-    private let knobY: CGFloat = 15
-
     var body: some View {
         Button {
             isOn.toggle()
         } label: {
-            ZStack {
-                Capsule()
-                    .fill(isOn ? Color.dsAccent : Color.dsInk3)
-                    .frame(width: trackWidth, height: trackHeight)
-                Circle()
-                    .fill(Color.dsPaper)
-                    .frame(width: thumbDiameter, height: thumbDiameter)
-                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                    // Approximates the reference's feGaussianBlur+feColorMatrix
-                    // "goo" halo (a blurred red blob merging into the thumb) as a
-                    // plain accent glow — the true blur+contrast technique was
-                    // tried once already and looked "terrible" (contrast shifts
-                    // color, not just alpha, so it hazed rather than merged).
-                    .shadow(color: .dsAccent.opacity(isOn ? 0.55 : 0), radius: 6)
-                    .position(x: isOn ? knobOnX : knobOffX, y: knobY)
-            }
-            .frame(width: width, height: height)
+            DSToggleBody(progress: isOn ? 1 : 0)
+                .frame(width: 56, height: 30)
         }
         .buttonStyle(.plain)
-        .animation(DS.anim(DS.durBase, reduceMotion: reduceMotion), value: isOn)
+        // A springy settle (slight overshoot) reads as the thumb sloshing into
+        // place — more liquid than the flat easeOut, which slid like a plate.
+        .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.6), value: isOn)
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
+    }
+}
+
+// The reference's "gel" toggle: the track and the travelling thumb are drawn
+// as one blurred layer that is then alpha-thresholded, so the thumb congeals
+// out of the track (a metaball) instead of sliding over it. alphaThreshold
+// recolors purely by coverage, which is why it merges where the earlier
+// blur+contrast attempt only hazed — contrast shifts hue, not just alpha.
+//
+// Animatable (rather than a plain View) because a Canvas's draw closure is not
+// interpolated by SwiftUI: without animatableData the goo would jump to its
+// end state while the crisp thumb glided. Driving both off one 0...1 progress
+// makes the blob, the track color, and the thumb travel as a single motion.
+private struct DSToggleBody: View, Animatable {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    // The reference hand-places these in its 56x30 box rather than deriving
+    // them from the 50x16 track, so they are copied, not recomputed.
+    private let knobOffX: CGFloat = 15
+    private let knobOnX: CGFloat = 41
+    private let knobY: CGFloat = 15
+
+    private var clamped: CGFloat { min(max(progress, 0), 1) }
+    private var knobX: CGFloat { knobOffX + (knobOnX - knobOffX) * clamped }
+    private var trackColor: Color {
+        Color(nsColor: DS.ink3.blended(withFraction: clamped, of: DS.accent) ?? DS.accent)
+    }
+
+    var body: some View {
+        ZStack {
+            Canvas { ctx, _ in
+                ctx.addFilter(.alphaThreshold(min: 0.5, color: trackColor))
+                // A little more blur = a longer, stretchier neck between track and
+                // thumb as it travels, so the metaball reads as liquid, not solid.
+                ctx.addFilter(.blur(radius: 5))
+                ctx.drawLayer { layer in
+                    let track = Path(
+                        roundedRect: CGRect(x: 3, y: 7, width: 50, height: 16), cornerRadius: 8)
+                    layer.fill(track, with: .color(.white))
+                    let blob = Path(ellipseIn: CGRect(x: knobX - 14, y: 1, width: 28, height: 28))
+                    layer.fill(blob, with: .color(.white))
+                }
+            }
+            Circle()
+                .fill(Color.dsPaper)
+                .frame(width: 20, height: 20)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                .position(x: knobX, y: knobY)
+        }
     }
 }
 
@@ -237,54 +265,108 @@ struct DSSlider: View {
     let range: ClosedRange<Double>
     @State private var dragging = false
 
-    // Reference measures an 8pt track with a 14-diameter thumb circle (r=7).
-    private let trackHeight: CGFloat = 8
-    private let thumbDiameter: CGFloat = 14
-    // The reference's fill gradient ("fkred") runs from a dark red stop to
-    // the flat accent, not accent-at-reduced-opacity — a real second color,
-    // not a fade of the same one.
-    private let fillStart = Color(red: 0x7C / 255, green: 0x26 / 255, blue: 0x20 / 255)
+    // The reference's 24pt-tall design box: an 8pt track, a 14pt thumb, and the
+    // thumb's travel inset by its own radius so it never overhangs either end.
+    private static let boxHeight: CGFloat = 24
+    private static let thumbDiameter: CGFloat = 14
 
     var body: some View {
         GeometryReader { geo in
             let width = max(geo.size.width, 1)
-            let thumbX = fraction(in: width) * width
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.dsInk2).frame(height: trackHeight)
-                Capsule()
-                    .fill(LinearGradient(
-                        colors: [fillStart, Color.dsAccent],
-                        startPoint: .leading, endPoint: .trailing))
-                    .frame(width: max(thumbDiameter / 2, thumbX), height: trackHeight)
-                Circle()
-                    .fill(Color.dsPaper)
-                    .frame(width: thumbDiameter, height: thumbDiameter)
-                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                    // Same accent-glow approximation of the reference's blurred
-                    // "gel" halo around the thumb as DSToggle uses.
-                    .shadow(color: .dsAccent.opacity(dragging ? 0.55 : 0.4), radius: dragging ? 8 : 5)
-                    .scaleEffect(dragging ? 1.12 : 1)
-                    .offset(x: thumbX - thumbDiameter / 2)
-            }
-            .frame(height: thumbDiameter + 8)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { g in
-                        dragging = true
-                        let clamped = min(max(g.location.x, 0), width)
-                        value = range.lowerBound + Double(clamped / width) * (range.upperBound - range.lowerBound)
-                    }
-                    .onEnded { _ in dragging = false })
+            DSSliderBody(fraction: fraction, width: width, dragging: dragging)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { g in
+                            dragging = true
+                            // Undo the thumb-radius inset the track uses, so the
+                            // value under the cursor matches the thumb's position
+                            // rather than drifting by up to half a thumb at the ends.
+                            let travel = max(width - Self.thumbDiameter, 1)
+                            let local = g.location.x - Self.thumbDiameter / 2
+                            let f = min(max(local / travel, 0), 1)
+                            value = range.lowerBound
+                                + Double(f) * (range.upperBound - range.lowerBound)
+                        }
+                        .onEnded { _ in dragging = false })
         }
-        .frame(height: thumbDiameter + 8)
+        .frame(height: Self.boxHeight)
         .animation(DS.animInstant, value: dragging)
         .dsNoWindowDrag()
     }
 
-    private func fraction(in width: CGFloat) -> CGFloat {
+    private var fraction: CGFloat {
         guard range.upperBound > range.lowerBound else { return 0 }
-        return CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
+        let f = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+        return CGFloat(min(max(f, 0), 1))
+    }
+}
+
+// Same metaball technique as DSToggleBody: a blurred, alpha-thresholded Canvas
+// layer draws a "neck" running back along the track plus a blob at the thumb, so
+// the thumb reads as gel pulled out of the fill rather than a dot parked on it.
+// The crisp paper thumb is drawn on top of the goo, not inside it.
+private struct DSSliderBody: View {
+    let fraction: CGFloat
+    let width: CGFloat
+    let dragging: Bool
+
+    private let boxHeight: CGFloat = 24
+    private let trackHeight: CGFloat = 8
+    private let thumbDiameter: CGFloat = 14
+    private var thumbRadius: CGFloat { thumbDiameter / 2 }
+
+    // Thumb center, inset by its radius at both ends so it stays on the track.
+    private var knob: CGFloat { thumbRadius + fraction * (width - thumbDiameter) }
+
+    // The neck+blob merge is full mid-travel and tapers to nothing at both ends
+    // (sin is 0 at 0 and 1). So at 0% and 100% only the clean circle shows — no
+    // neck stub poking past the rounded track end, and the blob shrinks to the
+    // thumb's own radius so it can't clip against the edge.
+    private var merge: CGFloat { sin(.pi * min(max(fraction, 0), 1)) }
+    private var neckWidth: CGFloat { 36 * merge }
+    private var blobRadius: CGFloat { thumbRadius + 4 * merge }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(Color.dsInk2).frame(height: trackHeight)
+            // One cohesive accent fill (a whisper of accentDim→accent for depth,
+            // not the old dark-red→accent two-tone) so the fill, the goo neck, and
+            // the blob all read as the same orange piece the thumb sits in.
+            Capsule()
+                .fill(LinearGradient(
+                    colors: [Color.dsAccentDim, Color.dsAccent],
+                    startPoint: .leading, endPoint: .trailing))
+                .frame(width: knob, height: trackHeight)
+            Canvas { ctx, _ in
+                ctx.addFilter(.alphaThreshold(min: 0.5, color: .dsAccent))
+                ctx.addFilter(.blur(radius: 6))
+                ctx.drawLayer { layer in
+                    if neckWidth > 0.5 {
+                        let neck = Path(
+                            roundedRect: CGRect(
+                                x: knob - neckWidth, y: boxHeight / 2 - 4,
+                                width: neckWidth, height: 8),
+                            cornerRadius: 4)
+                        layer.fill(neck, with: .color(.white))
+                    }
+                    let blob = Path(
+                        ellipseIn: CGRect(
+                            x: knob - blobRadius, y: boxHeight / 2 - blobRadius,
+                            width: blobRadius * 2, height: blobRadius * 2))
+                    layer.fill(blob, with: .color(.white))
+                }
+            }
+            .frame(height: boxHeight)
+            .allowsHitTesting(false)
+            Circle()
+                .fill(Color.dsPaper)
+                .frame(width: thumbDiameter, height: thumbDiameter)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                .scaleEffect(dragging ? 1.12 : 1)
+                .position(x: knob, y: boxHeight / 2)
+        }
+        .frame(height: boxHeight)
     }
 }
 
@@ -459,38 +541,48 @@ extension View {
     // mid-line. Applied to the ScrollView itself (its viewport size is
     // stable) rather than its content (which grows with scroll length), so
     // the fade band stays a consistent proportion regardless of content.
-    // Only masks when the content actually overflows the viewport — a pane
-    // short enough to show everything has nothing being cut off, so fading
-    // its edges just dims real content for no reason.
+    //
+    // Each edge fades only while there is actually something hidden past it:
+    // scrolled to the top, the top edge is crisp; scrolled to the bottom, the
+    // bottom edge is. Fading an edge with nothing behind it just dims real
+    // content (the first row of a pane) for no reason.
     func dsScrollEdgeFade() -> some View {
         modifier(DSScrollEdgeFade())
     }
 }
 
 private struct DSScrollEdgeFade: ViewModifier {
-    @State private var overflowing = false
+    private struct Edges: Equatable {
+        var top = false
+        var bottom = false
+    }
+
+    @State private var edges = Edges()
 
     func body(content: Content) -> some View {
         content
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height > geometry.containerSize.height + 1
+            .onScrollGeometryChange(for: Edges.self) { geometry in
+                let insets = geometry.contentInsets
+                let offset = geometry.contentOffset.y + insets.top
+                let scrollable = geometry.contentSize.height + insets.top + insets.bottom
+                    - geometry.containerSize.height
+                // Sub-point slack: a pane resting exactly at an edge can report a
+                // fractional offset, which would otherwise flicker the fade on.
+                guard scrollable > 1 else { return Edges() }
+                return Edges(top: offset > 1, bottom: offset < scrollable - 1)
             } action: { _, newValue in
-                overflowing = newValue
+                edges = newValue
             }
-            .mask(
-                LinearGradient(
-                    stops: overflowing
-                        ? [
-                            .init(color: .clear, location: 0),
-                            .init(color: .black, location: 0.04),
-                            .init(color: .black, location: 0.96),
-                            .init(color: .clear, location: 1),
-                        ]
-                        : [
-                            .init(color: .black, location: 0),
-                            .init(color: .black, location: 1),
-                        ],
-                    startPoint: .top, endPoint: .bottom))
+            .mask(LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom))
+    }
+
+    private var stops: [Gradient.Stop] {
+        [
+            .init(color: edges.top ? .clear : .black, location: 0),
+            .init(color: .black, location: edges.top ? 0.04 : 0),
+            .init(color: .black, location: edges.bottom ? 0.96 : 1),
+            .init(color: edges.bottom ? .clear : .black, location: 1),
+        ]
     }
 }
 

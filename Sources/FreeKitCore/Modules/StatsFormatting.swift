@@ -89,6 +89,47 @@ public enum StatsFormatting {
         return Double(current - previous) / seconds
     }
 
+    // Load-coloring: a normalized 0...1 metric maps to one of three severity
+    // levels, so a menu-bar widget can shade green→yellow→red as usage rises.
+    // The app maps the level to concrete NSColors; the thresholds live here so
+    // they stay pure and testable. Mirrors Stats.app's colorZones idea.
+    public enum LoadLevel: String, Sendable { case normal, elevated, high }
+
+    public struct LoadZones: Sendable {
+        public let warn: Double
+        public let critical: Double
+        // Reversed metrics (battery: a low value is the problem) invert the
+        // comparison so "high" means the low, alarming end.
+        public let reversed: Bool
+        public init(warn: Double, critical: Double, reversed: Bool = false) {
+            self.warn = warn
+            self.critical = critical
+            self.reversed = reversed
+        }
+    }
+
+    // Per-metric thresholds, keyed by StatKind.rawValue. Memory idles high so it
+    // only reddens near capacity; battery reverses (20%/15% left is the concern).
+    public static func loadZones(forMetric metric: String) -> LoadZones {
+        switch metric {
+        case "memory": return LoadZones(warn: 0.8, critical: 0.95)
+        case "battery", "bluetooth": return LoadZones(warn: 0.3, critical: 0.15, reversed: true)
+        default: return LoadZones(warn: 0.6, critical: 0.8)
+        }
+    }
+
+    public static func loadLevel(_ value: Double, zones: LoadZones) -> LoadLevel {
+        let clamped = min(max(value, 0), 1)
+        if zones.reversed {
+            if clamped <= zones.critical { return .high }
+            if clamped <= zones.warn { return .elevated }
+            return .normal
+        }
+        if clamped >= zones.critical { return .high }
+        if clamped >= zones.warn { return .elevated }
+        return .normal
+    }
+
     public static let lowDeviceBatteryThreshold = 20
 
     // Lowest battery first: whichever device needs attention should be the

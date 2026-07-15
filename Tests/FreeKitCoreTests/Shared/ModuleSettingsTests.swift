@@ -43,11 +43,10 @@ final class ModuleSettingsTests: XCTestCase {
         }
     }
 
-    // Speech predates the suite so it must stay on after the upgrade; new tools
-    // start off to keep the menu bar quiet until the user opts in.
-    func testOnlySpeechIsEnabledByDefault() {
-        XCTAssertTrue(settings.moduleEnabled(id: ModuleCatalog.speech.id))
-        for info in ModuleCatalog.all where info.id != ModuleCatalog.speech.id {
+    // Every module starts off — the suite onboarding turns tools on one at a
+    // time, so nothing (Speech included) claims the menu bar or a hotkey unasked.
+    func testAllModulesDisabledByDefault() {
+        for info in ModuleCatalog.all {
             XCTAssertFalse(settings.moduleEnabled(id: info.id), "\(info.id) should default off")
         }
     }

@@ -34,6 +34,7 @@ enum BoringNotchGlanceItem: String, CaseIterable, Identifiable {
     case cpu = "CPU"
     case memory = "Memory"
     case battery = "Battery"
+    case network = "Network"
     var id: String { rawValue }
 }
 
@@ -111,14 +112,15 @@ final class BoringNotchPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        collapsedWidth = defaults.object(forKey: Key.collapsedWidth) as? Double ?? 220
+        let hardware = Self.hardwareDimensions()
+        collapsedWidth = defaults.object(forKey: Key.collapsedWidth) as? Double ?? hardware.collapsedWidth
         expandedWidth = defaults.object(forKey: Key.expandedWidth) as? Double ?? 560
         expandedHeight = defaults.object(forKey: Key.expandedHeight) as? Double ?? 132
         expandOnHover = defaults.object(forKey: Key.expandOnHover) as? Bool ?? true
         autoCollapse = defaults.object(forKey: Key.autoCollapse) as? Bool ?? true
         collapseDelay = defaults.object(forKey: Key.collapseDelay) as? Double ?? 0.5
-        cornerRadius = defaults.object(forKey: Key.cornerRadius) as? Double ?? 22
-        showAccent = defaults.object(forKey: Key.showAccent) as? Bool ?? true
+        cornerRadius = defaults.object(forKey: Key.cornerRadius) as? Double ?? hardware.cornerRadius
+        showAccent = defaults.object(forKey: Key.showAccent) as? Bool ?? false
         showMedia = defaults.object(forKey: Key.showMedia) as? Bool ?? true
         mediaSource = BoringNotchMediaSource(rawValue: defaults.string(forKey: Key.mediaSource) ?? "") ?? .automatic
         showTrackPeek = defaults.object(forKey: Key.showTrackPeek) as? Bool ?? true
@@ -135,6 +137,22 @@ final class BoringNotchPreferences: ObservableObject {
         collapsedContent = BoringNotchCollapsedContent(
             rawValue: defaults.string(forKey: Key.collapsedContent) ?? "") ?? .nowPlaying
         mediaWingLeading = defaults.object(forKey: Key.mediaWingLeading) as? Bool ?? true
+    }
+
+    /// The notch shape auto-sizes to the hardware rather than being user-tuned: on a
+    /// notched Mac the collapsed pill and expanded corner radius follow the real camera
+    /// cutout (safe-area/auxiliary-top geometry); on a display with no cutout the
+    /// MacBook Pro 16" values stand in.
+    static func hardwareDimensions() -> (collapsedWidth: Double, cornerRadius: Double) {
+        let fallback = (collapsedWidth: 220.0, cornerRadius: 22.0)
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return fallback }
+        let left = screen.auxiliaryTopLeftArea ?? .zero
+        let right = screen.auxiliaryTopRightArea ?? .zero
+        guard !left.isEmpty, !right.isEmpty, right.minX > left.maxX else { return fallback }
+        let cutoutWidth = Double(right.minX - left.maxX)
+        let cutoutHeight = Double(max(screen.safeAreaInsets.top, left.height, right.height))
+        return (collapsedWidth: max(140, min(340, cutoutWidth)),
+                cornerRadius: cutoutHeight > 0 ? max(12, min(34, cutoutHeight)) : 22)
     }
 }
 
@@ -176,6 +194,8 @@ final class BoringStatsGlanceModel: ObservableObject {
     static let shared = BoringStatsGlanceModel()
     @Published private(set) var cpuUsage: Double = 0        // 0...1
     @Published private(set) var memoryFraction: Double = 0  // 0...1
+    @Published private(set) var downloadRate: Double = 0    // bytes/sec
+    @Published private(set) var uploadRate: Double = 0      // bytes/sec
     private let sampler = StatsSampler()
     private var timer: Timer?
 
@@ -190,6 +210,8 @@ final class BoringStatsGlanceModel: ObservableObject {
         let snapshot = sampler.sample()
         cpuUsage = snapshot.cpuUsage
         memoryFraction = snapshot.memoryTotal > 0 ? snapshot.memoryUsed / snapshot.memoryTotal : 0
+        downloadRate = snapshot.downloadBytesPerSecond
+        uploadRate = snapshot.uploadBytesPerSecond
     }
 }
 
@@ -497,10 +519,12 @@ final class BoringCalendarModel: ObservableObject {
         }
         let now = Date()
         let end = now.addingTimeInterval(max(1, min(72, BoringNotchPreferences.shared.calendarHours)) * 3600)
+        // Cap generously rather than tightly: the look-ahead window already bounds the range,
+        // and the non-boring styles now scroll through everything inside it.
         let events = store.events(matching: store.predicateForEvents(withStart: now, end: end, calendars: nil))
             .filter { !$0.isAllDay && $0.endDate > now }
             .sorted { $0.startDate < $1.startDate }
-            .prefix(5)
+            .prefix(30)
         upcomingEvents = events.map(Self.item(from:))
     }
 
@@ -567,6 +591,9 @@ enum NotchMetrics {
     static let openBottomRadius: CGFloat = 24
     /// Slack around the shape so its flared shoulders stay inside the window.
     static let windowPadding: CGFloat = 24
+    /// Uniform inset around the camera mirror on all four sides — shared by the mirror
+    /// layout and the mirror-panel width math so the feed lines up with its rounded frame.
+    static let mirrorInset: CGFloat = 16
 }
 
 /// The top corners curve *outward* into the menu bar rather than in, so the panel reads as the
@@ -735,7 +762,7 @@ final class BoringNotchPanelController {
                 self.preferences.showCalendar ? self.calendar.start() : self.calendar.stop()
                 let glance = self.preferences.glanceItems
                 glance.contains(.battery) ? self.battery.start() : self.battery.stop()
-                glance.contains(.cpu) || glance.contains(.memory)
+                glance.contains(.cpu) || glance.contains(.memory) || glance.contains(.network)
                     ? self.stats.start() : self.stats.stop()
                 self.media.refresh()
                 self.calendar.refresh()
@@ -795,7 +822,7 @@ final class BoringNotchPanelController {
         if preferences.showMedia { media.start() }
         if preferences.showCalendar { calendar.start() }
         if preferences.glanceItems.contains(.battery) { battery.start() }
-        if preferences.glanceItems.contains(where: { $0 == .cpu || $0 == .memory }) { stats.start() }
+        if preferences.glanceItems.contains(where: { $0 == .cpu || $0 == .memory || $0 == .network }) { stats.start() }
     }
     func hide() {
         collapseWork?.cancel(); peekWork?.cancel()
@@ -877,12 +904,15 @@ final class BoringNotchPanelController {
         state.peekSize = CGSize(width: min(openWidth, state.closedSize.width + 220), height: closedHeight)
         // Mirror mode hugs the camera feed: same height as the open panel, but only as wide
         // as a 4:3 preview (the built-in camera's aspect at the .medium preset) needs — never
-        // narrower than the physical cutout plus its flared shoulders.
+        // narrower than the physical cutout plus its flared shoulders. The camera sits inside
+        // a uniform inset, so the feed's own height/width is the content area minus that inset
+        // on every side; solving for panel width keeps the 4:3 feed flush with its frame.
         let mirrorContentHeight = openHeight - closedHeight
+        let mirrorFeedHeight = mirrorContentHeight - 2 * NotchMetrics.mirrorInset
         state.mirrorSize = CGSize(
             width: min(openWidth,
                        max(notchWidth + 2 * NotchMetrics.openTopRadius,
-                           mirrorContentHeight * 4 / 3 + 24)),
+                           mirrorFeedHeight * 4 / 3 + 2 * NotchMetrics.mirrorInset)),
             height: openHeight)
 
         let pad = NotchMetrics.windowPadding
@@ -940,6 +970,54 @@ struct BoringNotchPanelView: View {
     private var hoverTolerance: CGFloat {
         state.expanded ? 0 : CGFloat(max(0, min(40, preferences.hoverTolerance)))
     }
+    /// The panel's ink fill + album-tint wash + wavy black band. Drawn once at the open size
+    /// (see the `.background` call) so it never scales or re-washes during the expand spring —
+    /// only the clip shape animates, revealing this steady wash.
+    private var notchBackground: some View {
+        // Sits behind the clock/battery/text (drawn above, in the Group), above the plain ink
+        // fill — so it blends the panel into the physical camera cutout without washing out
+        // anything on top of it. Holds solid black through most of the band before fading out
+        // over just the last stretch, so the black reads as a deliberate slab, not a sliver.
+        ZStack(alignment: .top) {
+            Color.dsInk0
+            // The album-art tint wash sits behind the black fade, not in front of
+            // it — otherwise a colorful album cover paints over the black band
+            // instead of black winning at the top no matter what's playing.
+            if state.expanded {
+                artworkTintWash
+                // The reference's wash lives only in the lower content, never
+                // touching the header strip or the physical cutout — the black
+                // fade below draws on top of it near the top edge, same as the
+                // reference keeps its mesh clear of the notch entirely.
+                DSWashLayer(baseColor: .clear, bold: true)
+            }
+            // Solid black for the band, meeting the wash along an undulating
+            // line instead of a ruler-straight horizontal seam. While collapsed
+            // the whole pill IS the band (same as before); while expanded it's
+            // capped to a header-height strip so it blends the physical cutout
+            // without also blacking out the wash across the rest of the much
+            // taller expanded panel.
+            //
+            // blur() softens every edge of the shape, not just the wavy bottom
+            // one — left unguarded, that also fades the flush top edge into a
+            // faint black-to-transparent gradient right where the panel meets
+            // the real menu bar, showing a sliver of wash color instead of solid
+            // bezel-black. Extending the rect blurPad above the visible frame
+            // and shifting it back down by the same amount pushes that top-edge
+            // softening above the panel's own clip region, so only the wavy
+            // bottom edge's blur ever renders.
+            let bandHeight = state.expanded ? min(70, state.currentSize.height) : state.currentSize.height
+            let blurPad: CGFloat = state.expanded ? 20 : 0
+            WavyEdgeRect(amplitude: state.expanded ? 6 : 0, wavelength: 90)
+                .fill(Color.black)
+                .frame(height: bandHeight + blurPad)
+                .offset(y: -blurPad)
+                .blur(radius: state.expanded ? 14 : 0)
+            // Collapsed pill has no room for the wash to read, but still gets a
+            // touch of grain so it's not the one bare surface in the suite.
+            if !state.expanded { DSGrainOverlay(opacity: 0.06) }
+        }
+    }
     var body: some View {
         // Sits at the top of an oversized window. Only this sized view exists, so the empty margin
         // around it never hit-tests and clicks pass through to the menu bar.
@@ -951,50 +1029,14 @@ struct BoringNotchPanelView: View {
             .animation(DS.animCrossfade, value: state.expanded)
             .frame(width: state.currentSize.width, height: state.currentSize.height)
             .background(alignment: .top) {
-                // Sits behind the clock/battery/text (which is drawn above, in the
-                // Group), above the plain ink fill — so it blends the panel into the
-                // physical camera cutout without washing out anything on top of it.
-                // Holds solid black through most of the band before fading out over just
-                // the last stretch, so the black reads as a deliberate slab, not a sliver.
-                ZStack(alignment: .top) {
-                    Color.dsInk0
-                    // The album-art tint wash sits behind the black fade, not in front of
-                    // it — otherwise a colorful album cover paints over the black band
-                    // instead of black winning at the top no matter what's playing.
-                    if state.expanded {
-                        artworkTintWash
-                        // The reference's wash lives only in the lower content, never
-                        // touching the header strip or the physical cutout — the black
-                        // fade below draws on top of it near the top edge, same as the
-                        // reference keeps its mesh clear of the notch entirely.
-                        DSWashLayer(baseColor: .clear, bold: true)
-                    }
-                    // Solid black for the band, meeting the wash along an undulating
-                    // line instead of a ruler-straight horizontal seam. While collapsed
-                    // the whole pill IS the band (same as before); while expanded it's
-                    // capped to a header-height strip so it blends the physical cutout
-                    // without also blacking out the wash across the rest of the much
-                    // taller expanded panel.
-                    //
-                    // blur() softens every edge of the shape, not just the wavy bottom
-                    // one — left unguarded, that also fades the flush top edge into a
-                    // faint black-to-transparent gradient right where the panel meets
-                    // the real menu bar, showing a sliver of wash color instead of solid
-                    // bezel-black. Extending the rect blurPad above the visible frame
-                    // and shifting it back down by the same amount pushes that top-edge
-                    // softening above the panel's own clip region, so only the wavy
-                    // bottom edge's blur ever renders.
-                    let bandHeight = state.expanded ? min(70, state.currentSize.height) : state.currentSize.height
-                    let blurPad: CGFloat = state.expanded ? 20 : 0
-                    WavyEdgeRect(amplitude: state.expanded ? 6 : 0, wavelength: 90)
-                        .fill(Color.black)
-                        .frame(height: bandHeight + blurPad)
-                        .offset(y: -blurPad)
-                        .blur(radius: state.expanded ? 14 : 0)
-                    // Collapsed pill has no room for the wash to read, but still gets a
-                    // touch of grain so it's not the one bare surface in the suite.
-                    if !state.expanded { DSGrainOverlay(opacity: 0.06) }
-                }
+                // Rendered at the stable open size and revealed by the growing clip shape,
+                // so the wash/grain hold still while the panel expands rather than scaling
+                // or re-washing on every open. Overflow is cropped by .clipShape below.
+                notchBackground
+                    .frame(width: max(state.openSize.width, state.currentSize.width),
+                           height: max(state.openSize.height, state.currentSize.height),
+                           alignment: .top)
+                    .animation(nil, value: state.currentSize)
             }
             // A physical notch must stay seamless bezel-black with no rim; the virtual bar on
             // notch-less displays has no cutout to blend into, so a hairline gives it definition
@@ -1139,6 +1181,19 @@ struct BoringNotchPanelView: View {
         case .cpu: statReadout(symbol: "cpu", fraction: stats.cpuUsage)
         case .memory: statReadout(symbol: "memorychip", fraction: stats.memoryFraction)
         case .battery: batteryReadout
+        case .network: networkReadout
+        }
+    }
+    /// Down/up throughput in the same glyph+value voice as the CPU/memory readouts.
+    private var networkReadout: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.down.arrow.up")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.55))
+            Text(StatsFormatting.bytesPerSecond(stats.downloadRate))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white.opacity(0.75))
         }
     }
     private var batteryReadout: some View {
@@ -1199,12 +1254,15 @@ struct BoringNotchPanelView: View {
     private var mirrorModeContent: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: state.hasPhysicalNotch ? state.physicalNotchHeight : 22)
+            // Equal inset on all four sides so the aspect-filled feed sits centered in its
+            // rounded frame — the width math above reserves exactly this inset per side.
             mirrorContent
-                .padding(.horizontal, 10)
-                .padding(.top, 2)
-                .padding(.bottom, 10)
+                .padding(NotchMetrics.mirrorInset)
         }
     }
+    /// Frames the mirror preview a touch tighter than the panel's own corners so the recessed
+    /// feed reads as nested inside the notch, not flush with its edge.
+    private var mirrorCornerRadius: CGFloat { CGFloat(max(12, min(20, preferences.cornerRadius))) }
     private var wingsContent: some View {
         VStack(spacing: 0) {
             // The physical cutout owns this strip; clock/stats/battery on the left and the
@@ -1280,12 +1338,29 @@ struct BoringNotchPanelView: View {
                     Button("Open Settings") { Permissions.openCameraSettings() }
                         .buttonStyle(GhostButtonStyle())
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 CameraPreviewView(session: mirror.session)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: mirrorCornerRadius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: mirrorCornerRadius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                    // Soft dark inset edge so the feed sits recessed in its frame rather than
+                    // floating flat against the notch black.
+                    .overlay(
+                        RoundedRectangle(cornerRadius: mirrorCornerRadius, style: .continuous)
+                            .stroke(Color.black.opacity(0.45), lineWidth: 3)
+                            .blur(radius: 3)
+                            .mask(RoundedRectangle(cornerRadius: mirrorCornerRadius, style: .continuous)))
+                    .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Clicking the mirror itself dismisses it too; the Open Settings button keeps its own
+        // hit, so only passive taps on the preview collapse the notch.
+        .contentShape(Rectangle())
+        .onTapGesture { mirror.stop() }
     }
     /// A faint wash of the current artwork's dominant color behind the whole expanded card —
     /// only while media is showing and real album art loaded, so an empty/calendar-only notch
@@ -1310,6 +1385,16 @@ struct BoringNotchPanelView: View {
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
     private func openCalendarApp() { openApp(bundleID: "com.apple.iCal") }
+    /// Opens Calendar.app focused on a specific event via the `calshow:` URL scheme, whose
+    /// argument is seconds since the 2001 reference date. Falls back to a generic launch.
+    private func openCalendarEvent(_ event: BoringCalendarItem) {
+        let seconds = Int(event.startDate.timeIntervalSinceReferenceDate)
+        if let url = URL(string: "calshow:\(seconds)") {
+            NSWorkspace.shared.open(url)
+        } else {
+            openCalendarApp()
+        }
+    }
     private func openMusicApp() {
         if preferences.mediaSource == .appleMusic {
             openApp(bundleID: "com.apple.Music")
@@ -1416,6 +1501,9 @@ struct BoringNotchPanelView: View {
                 .background(prominent ? Color.white.opacity(0.10) : Color.clear, in: Circle())
         }.buttonStyle(.plain).help(help)
     }
+    // No wing-level open-Calendar tap: switching days must not launch Calendar.app, and
+    // opening an event belongs to that event's own row tap (openCalendarEvent) so it lands
+    // on the right item rather than a generic Calendar window.
     private var calendarWing: some View {
         Group {
             if preferences.calendarStyle == .boring {
@@ -1424,8 +1512,6 @@ struct BoringNotchPanelView: View {
                 calendarNonBoringStyles
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: openCalendarApp)
     }
     private var calendarNonBoringStyles: some View {
         VStack(alignment: .trailing, spacing: 7) {
@@ -1508,24 +1594,27 @@ struct BoringNotchPanelView: View {
                         Text(date, format: .dateTime.weekday(.narrow))
                             .font(.system(size: 8, weight: .medium))
                             .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.55))
+                            .frame(height: 10)
+                        // Every day cell reserves the same 18x18 decoration box with the
+                        // number centered inside it — today's filled circle, a selected
+                        // day's ring, and a plain day all occupy identical space, so no
+                        // one cell sits raised above the row's shared baseline.
                         ZStack {
                             Circle()
                                 .fill(isToday ? Color.dsAccent : Color.clear)
-                                .frame(width: 15, height: 15)
                             // Selection reads through a thin ring instead of a filled block,
                             // keeping the wing free of background washes.
                             if isSelected, !isToday {
-                                Circle()
-                                    .stroke(Color.white.opacity(0.45), lineWidth: 1)
-                                    .frame(width: 15, height: 15)
+                                Circle().stroke(Color.white.opacity(0.45), lineWidth: 1)
                             }
                             Text(date, format: .dateTime.day())
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(isSelected || isToday ? Color.white : Color.white.opacity(0.55))
                         }
+                        .frame(width: 18, height: 18)
                     }
-                    .padding(.vertical, 2)
                     .padding(.horizontal, 3)
+                    .frame(height: 32)
                 }
                 .buttonStyle(.plain)
             }
@@ -1549,54 +1638,73 @@ struct BoringNotchPanelView: View {
             }
             .font(.system(size: 9, weight: .medium, design: .monospaced))
         }
+        .contentShape(Rectangle())
+        .onTapGesture { openCalendarEvent(event) }
     }
+    /// The non-boring styles show every event inside the look-ahead window and scroll rather
+    /// than truncating to a fixed count, so a long look-ahead is actually browsable.
+    private static let calendarScrollHeight: CGFloat = 96
     /// Original two-line-per-event layout: title, then time + calendar name, with a colored
     /// bar on the trailing edge keyed to the source calendar.
     private var calendarListStyle: some View {
-        ForEach(Array(calendar.upcomingEvents.prefix(2))) { event in
-            HStack(spacing: 8) {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(event.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .trailing, spacing: 7) {
+                ForEach(calendar.upcomingEvents) { event in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(event.title)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                                .lineLimit(1)
+                            HStack(spacing: 5) {
+                                Text(event.startDate, format: .dateTime.hour().minute())
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                Text(event.calendarName).lineLimit(1)
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundStyle(Color.white.opacity(0.38))
+                        }
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(Color(nsColor: event.color))
+                            .frame(width: 3, height: 26)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .contentShape(Rectangle())
+                    .onTapGesture { openCalendarEvent(event) }
+                }
+            }
+        }
+        .frame(maxHeight: Self.calendarScrollHeight)
+    }
+    /// One line per event (dot + title + time) so more of the day fits at a glance — trades
+    /// the calendar-name detail for count, the way NotchNook's timeline reads.
+    private var calendarCompactStyle: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .trailing, spacing: 6) {
+                ForEach(calendar.upcomingEvents) { event in
+                    HStack(spacing: 6) {
+                        Text(event.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.85))
+                            .lineLimit(1)
                         Text(event.startDate, format: .dateTime.hour().minute())
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        Text(event.calendarName).lineLimit(1)
-                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                        Circle().fill(Color(nsColor: event.color)).frame(width: 5, height: 5)
                     }
-                    .foregroundStyle(Color.white.opacity(0.38))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .contentShape(Rectangle())
+                    .onTapGesture { openCalendarEvent(event) }
                 }
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color(nsColor: event.color))
-                    .frame(width: 3, height: 26)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-    }
-    /// One line per event (dot + title + time) so more of the day fits without scrolling —
-    /// trades the calendar-name detail for count, the way NotchNook's timeline reads.
-    private var calendarCompactStyle: some View {
-        ForEach(Array(calendar.upcomingEvents.prefix(4))) { event in
-            HStack(spacing: 6) {
-                Text(event.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.85))
-                    .lineLimit(1)
-                Text(event.startDate, format: .dateTime.hour().minute())
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.4))
-                Circle().fill(Color(nsColor: event.color)).frame(width: 5, height: 5)
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        }
+        .frame(maxHeight: Self.calendarScrollHeight)
     }
     /// Leads with a large "in Xm/Xh" readout for the very next event — foregrounds urgency
-    /// over a flat list, the way Notchable's agenda glance reads — then a thin tail of what's
-    /// after it.
+    /// over a flat list, the way Notchable's agenda glance reads — then a scrollable tail of
+    /// everything after it inside the look-ahead window.
     private var calendarAgendaStyle: some View {
-        let events = Array(calendar.upcomingEvents.prefix(3))
+        let events = calendar.upcomingEvents
         return VStack(alignment: .trailing, spacing: 6) {
             if let next = events.first {
                 VStack(alignment: .trailing, spacing: 1) {
@@ -1610,15 +1718,25 @@ struct BoringNotchPanelView: View {
                             .foregroundStyle(Color(nsColor: next.color))
                     }
                 }
-                ForEach(events.dropFirst()) { event in
-                    HStack(spacing: 5) {
-                        Text(event.title).lineLimit(1)
-                            .font(.system(size: 10, weight: .medium))
-                        Text(event.startDate, format: .dateTime.hour().minute())
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .contentShape(Rectangle())
+                .onTapGesture { openCalendarEvent(next) }
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .trailing, spacing: 5) {
+                        ForEach(events.dropFirst()) { event in
+                            HStack(spacing: 5) {
+                                Text(event.title).lineLimit(1)
+                                    .font(.system(size: 10, weight: .medium))
+                                Text(event.startDate, format: .dateTime.hour().minute())
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            }
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .contentShape(Rectangle())
+                            .onTapGesture { openCalendarEvent(event) }
+                        }
                     }
-                    .foregroundStyle(Color.white.opacity(0.4))
                 }
+                .frame(maxHeight: Self.calendarScrollHeight - 34)
             }
         }
     }
@@ -1656,6 +1774,8 @@ private struct MiniEqualizer: View {
 struct BoringNotchSettingsPane: View {
     @ObservedObject private var preferences = BoringNotchPreferences.shared
     @ObservedObject private var calendar = BoringCalendarModel.shared
+    @State private var tab: Tab = .media
+    private enum Tab: String, CaseIterable { case media = "Media", calendar = "Calendar", glances = "Glances", behavior = "Behavior" }
     private var hasPhysicalNotch: Bool {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return false }
         let left = screen.auxiliaryTopLeftArea ?? .zero, right = screen.auxiliaryTopRightArea ?? .zero
@@ -1664,95 +1784,102 @@ struct BoringNotchSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DSSettingsCard(title: "Preview") { BoringNotchPreview().frame(maxWidth: .infinity).frame(height: 128) }
-            DSSettingsCard(title: "Player") {
-                DSToggleRow(title: "Show media controls", isOn: $preferences.showMedia)
-                HStack(spacing: 8) { ForEach(BoringNotchMediaSource.allCases) { source in
-                    DSChip(title: source.rawValue, selected: preferences.mediaSource == source) {
-                        preferences.mediaSource = source; BoringNowPlayingModel.shared.refresh()
-                    }
-                }}
-                Text(preferences.mediaSource == .automatic
-                     ? "Automatic prefers Spotify or Apple Music when either is open, then falls back to whatever else is playing system-wide (Safari, Podcasts, VLC, anything)."
-                     : "Locked to \(preferences.mediaSource.rawValue) \u{2014} other apps' audio won't show here even if it's what's actually playing.")
-                    .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
-                DSToggleRow(title: "Peek when the track changes", isOn: $preferences.showTrackPeek)
-                slider("Peek duration", value: $preferences.trackPeekDuration, range: 1.5...8, suffix: "s")
-            }
-            DSSettingsCard(title: "Calendar") {
-                DSToggleRow(title: "Show next event", isOn: $preferences.showCalendar)
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(calendar.hasAccess ? "Calendar connected" : "Calendar access required")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dsPaper)
-                        Text("Includes Google accounts connected to macOS Calendar.")
-                            .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
-                    }
-                    Spacer()
-                    if !calendar.hasAccess { Button("Allow Calendar") { calendar.requestAccess() }.buttonStyle(GhostButtonStyle()) }
+            HStack(spacing: 22) {
+                ForEach(Tab.allCases, id: \.self) { value in
+                    DSTabButton(title: value.rawValue, selected: tab == value) { tab = value }
                 }
-                slider("Look ahead", value: $preferences.calendarHours, range: 1...72, suffix: "h")
-                HStack(spacing: 8) { ForEach(BoringNotchCalendarStyle.allCases) { style in
-                    DSChip(title: style.rawValue, selected: preferences.calendarStyle == style) {
-                        preferences.calendarStyle = style
-                    }
-                }}
-                Text(calendarStyleCaption)
-                    .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
+                Spacer()
             }
-            DSSettingsCard(title: "Dimensions") {
-                if hasPhysicalNotch {
-                    HStack(spacing: 10) { Image(systemName: "macbook").foregroundStyle(Color.dsAccent).frame(width: 24)
-                        Text("Collapsed size follows this MacBook's camera cutout.")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dsPaper) }
-                } else { slider("Collapsed width", value: $preferences.collapsedWidth, range: 140...340) }
-                slider("Expanded width", value: $preferences.expandedWidth, range: 380...760)
-                slider("Content height", value: $preferences.expandedHeight, range: 112...200)
-                slider("Corner radius", value: $preferences.cornerRadius, range: 12...34)
-                if preferences.showMedia && preferences.showCalendar {
-                    DSToggleRow(title: "Media on the left", isOn: $preferences.mediaWingLeading)
+            Rectangle().fill(Color.dsLine).frame(height: 1)
+            switch tab {
+            case .media: mediaTab
+            case .calendar: calendarTab
+            case .glances: glancesTab
+            case .behavior: behaviorTab
+            }
+        }
+    }
+    @ViewBuilder private var mediaTab: some View {
+        DSSettingsCard(title: "Player") {
+            DSToggleRow(title: "Show media controls", isOn: $preferences.showMedia)
+            HStack(spacing: 8) { ForEach(BoringNotchMediaSource.allCases) { source in
+                DSChip(title: source.rawValue, selected: preferences.mediaSource == source) {
+                    preferences.mediaSource = source; BoringNowPlayingModel.shared.refresh()
                 }
+            }}
+            Text(preferences.mediaSource == .automatic
+                 ? "Automatic prefers Spotify or Apple Music when either is open, then falls back to whatever else is playing system-wide (Safari, Podcasts, VLC, anything)."
+                 : "Locked to \(preferences.mediaSource.rawValue) \u{2014} other apps' audio won't show here even if it's what's actually playing.")
+                .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
+            DSToggleRow(title: "Peek when the track changes", isOn: $preferences.showTrackPeek)
+            slider("Peek duration", value: $preferences.trackPeekDuration, range: 1.5...8, suffix: "s")
+            if preferences.showMedia && preferences.showCalendar {
+                DSToggleRow(title: "Media on the left", isOn: $preferences.mediaWingLeading)
             }
-            DSSettingsCard(title: "Menu bar strip") {
-                Text("Two readouts sit left of the notch \u{2014} pick which two.")
-                    .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
-                HStack(spacing: 8) { ForEach(BoringNotchGlanceItem.allCases) { item in
-                    DSChip(title: item.rawValue, selected: preferences.glanceItems.contains(item)) {
-                        toggleGlanceItem(item)
-                    }
-                }}
-            }
-            DSSettingsCard(title: "Mirror") {
-                DSToggleRow(
-                    title: "Show mirror button",
-                    caption: "A camera icon that shrinks the notch to a quick front-camera preview \u{2014} handy before a call. Click anywhere else to dismiss it. Asks for Camera access the first time, and the camera never runs unless the mirror is open.",
-                    isOn: $preferences.showMirrorButton)
-            }
-            DSSettingsCard(title: "Behavior") {
-                DSToggleRow(title: "Expand on hover", isOn: $preferences.expandOnHover)
+        }
+        DSSettingsCard(title: "Mirror") {
+            DSToggleRow(
+                title: "Show mirror button",
+                caption: "A camera icon that shrinks the notch to a quick front-camera preview \u{2014} handy before a call. Clicking anywhere dismisses the mirror. Asks for Camera access the first time, and the camera never runs unless the mirror is open.",
+                isOn: $preferences.showMirrorButton)
+        }
+    }
+    @ViewBuilder private var calendarTab: some View {
+        DSSettingsCard(title: "Calendar") {
+            DSToggleRow(title: "Show Calendar", isOn: $preferences.showCalendar)
+            HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    slider("Hover reach", value: $preferences.hoverTolerance, range: 0...40)
-                    Text(preferences.hoverTolerance < 1
-                         ? "Expands only when the pointer is on the notch itself."
-                         : "Expands within \(Int(preferences.hoverTolerance))pt of the notch.")
+                    Text(calendar.hasAccess ? "Calendar connected" : "Calendar access required")
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.dsPaper)
+                    Text("Includes Google accounts connected to macOS Calendar.")
                         .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
                 }
-                DSToggleRow(title: "Collapse after leaving", isOn: $preferences.autoCollapse)
-                slider("Collapse delay", value: $preferences.collapseDelay, range: 0.2...5, suffix: "s")
-                if hasPhysicalNotch {
-                    DSToggleRow(title: "Show accent indicator", caption: "A small dot below the camera cutout at rest.",
-                               isOn: $preferences.showAccent)
-                }
+                Spacer()
+                if !calendar.hasAccess { Button("Allow Calendar") { calendar.requestAccess() }.buttonStyle(GhostButtonStyle()) }
             }
-            if !hasPhysicalNotch {
-                DSSettingsCard(title: "At rest") {
-                    Text("What the bar shows when it's collapsed and nothing else is happening.")
-                        .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
-                    HStack(spacing: 8) { ForEach(BoringNotchCollapsedContent.allCases) { style in
-                        DSChip(title: style.rawValue, selected: preferences.collapsedContent == style) {
-                            preferences.collapsedContent = style
-                        }
-                    }}
+            slider("Look ahead", value: $preferences.calendarHours, range: 1...72, suffix: "h")
+            HStack(spacing: 8) { ForEach(BoringNotchCalendarStyle.allCases) { style in
+                DSChip(title: style.rawValue, selected: preferences.calendarStyle == style) {
+                    preferences.calendarStyle = style
                 }
+            }}
+            Text(calendarStyleCaption)
+                .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
+        }
+    }
+    @ViewBuilder private var glancesTab: some View {
+        DSSettingsCard(title: "Menu bar strip") {
+            Text("Two readouts sit left of the notch \u{2014} pick which two.")
+                .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
+            HStack(spacing: 8) { ForEach(BoringNotchGlanceItem.allCases) { item in
+                DSChip(title: item.rawValue, selected: preferences.glanceItems.contains(item)) {
+                    toggleGlanceItem(item)
+                }
+            }}
+        }
+    }
+    @ViewBuilder private var behaviorTab: some View {
+        DSSettingsCard(title: "Behavior") {
+            DSToggleRow(title: "Expand on hover", isOn: $preferences.expandOnHover)
+            VStack(alignment: .leading, spacing: 2) {
+                slider("Hover reach", value: $preferences.hoverTolerance, range: 0...40)
+                Text(preferences.hoverTolerance < 1
+                     ? "Expands only when the pointer is on the notch itself."
+                     : "Expands within \(Int(preferences.hoverTolerance))pt of the notch.")
+                    .font(.system(size: 10)).foregroundStyle(Color.dsFaint)
+            }
+            DSToggleRow(title: "Collapse after leaving", isOn: $preferences.autoCollapse)
+            slider("Collapse delay", value: $preferences.collapseDelay, range: 0.2...5, suffix: "s")
+        }
+        if !hasPhysicalNotch {
+            DSSettingsCard(title: "At rest") {
+                Text("What the bar shows when it's collapsed and nothing else is happening.")
+                    .font(.system(size: 11)).foregroundStyle(Color.dsFaint)
+                HStack(spacing: 8) { ForEach(BoringNotchCollapsedContent.allCases) { style in
+                    DSChip(title: style.rawValue, selected: preferences.collapsedContent == style) {
+                        preferences.collapsedContent = style
+                    }
+                }}
             }
         }
     }
@@ -1772,7 +1899,7 @@ struct BoringNotchSettingsPane: View {
     private var calendarStyleCaption: String {
         switch preferences.calendarStyle {
         case .boring: return "Month, a small day picker, and each event's start and end times."
-        case .list: return "Title, time, and calendar name for the next two events."
+        case .list: return "Title, time, and calendar name \u{2014} scrolls through the look-ahead window."
         case .compact: return "One line per event so more of the day fits at a glance."
         case .agenda: return "Leads with a countdown to the very next event."
         }
@@ -1789,72 +1916,142 @@ struct BoringNotchSettingsPane: View {
     }
 }
 
+/// A self-running demo of the notch's behavior, so the settings pane shows what the notch
+/// does without the user hovering the real one. Cycles every 2.5s through three stages —
+/// expanded (media + calendar) -> collapsing (the wings fade away) -> the collapsed glance
+/// strip (time/battery) -> back to expanded, looping — driven by the shared motion grammar
+/// (`DS.animExpand`/`DS.animBase`), so it goes instant under Reduce Motion.
 private struct BoringNotchPreview: View {
+    private enum Stage { case expanded, collapsing, glance }
+    @State private var stage: Stage = .expanded
+    private let cycle = Timer.publish(every: 2.5, on: .main, in: .common).autoconnect()
+
+    private var big: Bool { stage != .glance }
+    private var showsWings: Bool { stage == .expanded }
+    private var cardShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: big ? 18 : 13,
+                               bottomTrailingRadius: big ? 18 : 13, topTrailingRadius: 0,
+                               style: .continuous)
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                HStack(spacing: 7) {
-                    Text("12:19")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                    Image(systemName: "battery.75").font(.system(size: 10))
-                        .foregroundStyle(Color.white.opacity(0.7))
-                    Text("85%").font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.85))
+        Group {
+            if big {
+                VStack(spacing: 0) {
+                    headerStrip
+                    // The wings fade in place (same big card) so the collapsing stage reads as
+                    // the media/calendar disappearing before the shape shrinks to the strip.
+                    wingsRow
+                        .opacity(showsWings ? 1 : 0)
+                        .animation(DS.animBase, value: showsWings)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                NotchShape(topCornerRadius: 4, bottomCornerRadius: 7)
-                    .fill(Color.dsInk0)
-                    .frame(width: 132, height: 26)
-                HStack(spacing: 6) {
-                    Image(systemName: "trash")
-                    Image(systemName: "cursorarrow.click.2")
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                    Image(systemName: "gearshape")
-                }
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.4))
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .transition(.opacity)
+            } else {
+                glanceStrip.transition(.opacity)
             }
-            .frame(height: 26)
-            .padding(.horizontal, 14)
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "music.note")
-                            .foregroundStyle(Color.dsAccent)
-                            .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.08),
-                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Song title").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.white)
-                            Text("Artist").font(.system(size: 8)).foregroundStyle(Color.white.opacity(0.45))
-                        }
-                    }
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.10)).frame(height: 2)
-                        Capsule().fill(Color.dsAccent).frame(width: 62, height: 2)
-                    }
-                    HStack(spacing: 10) {
-                        Image(systemName: "backward.fill")
-                        Image(systemName: "pause.fill")
-                        Image(systemName: "forward.fill")
-                    }.font(.system(size: 8)).foregroundStyle(Color.white.opacity(0.55))
-                        .frame(maxWidth: .infinity)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1)
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text("UP NEXT").font(.system(size: 7, weight: .semibold, design: .monospaced))
-                        .kerning(0.6).foregroundStyle(Color.white.opacity(0.28))
-                    previewEvent("Design review", "10:30 AM")
-                    previewEvent("Project sync", "1:00 PM")
-                }.frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
         }
-        .frame(width: 380, height: 130).background(Color.black,
-            in: UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 18,
-                bottomTrailingRadius: 18, topTrailingRadius: 0, style: .continuous))
+        .frame(width: big ? 380 : 210, height: big ? 118 : 26, alignment: .top)
+        .background(Color.black, in: cardShape)
+        .clipShape(cardShape)
+        // The size/shape morph and the content crossfade both ride the expand spring; the wings'
+        // own fade (above) is the shorter base curve. All nil under Reduce Motion -> instant.
+        .animation(DS.animExpand(), value: big)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 6)
+        .onReceive(cycle) { _ in advance() }
+    }
+
+    private func advance() {
+        switch stage {
+        case .expanded: stage = .collapsing
+        case .collapsing: stage = .glance
+        case .glance: stage = .expanded
+        }
+    }
+
+    private var glancePair: some View {
+        HStack(spacing: 7) {
+            Text("12:19")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.85))
+            Image(systemName: "battery.75").font(.system(size: 10))
+                .foregroundStyle(Color.white.opacity(0.7))
+            Text("85%").font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.85))
+        }
+    }
+
+    private var headerStrip: some View {
+        HStack(spacing: 0) {
+            glancePair
+                .frame(maxWidth: .infinity, alignment: .leading)
+            NotchShape(topCornerRadius: 4, bottomCornerRadius: 7)
+                .fill(Color.dsInk0)
+                .frame(width: 132, height: 26)
+            HStack(spacing: 6) {
+                Image(systemName: "trash")
+                Image(systemName: "cursorarrow.click.2")
+                Image(systemName: "arrow.triangle.2.circlepath")
+                Image(systemName: "gearshape")
+            }
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.4))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(height: 26)
+        .padding(.horizontal, 14)
+    }
+
+    /// The collapsed menu-bar glance: time/battery to the left of the cutout, mirroring where
+    /// the real notch parks its glances at rest.
+    private var glanceStrip: some View {
+        HStack(spacing: 0) {
+            glancePair
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: 40)
+            Image(systemName: "waveform")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.dsAccent)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxHeight: .infinity)
+    }
+
+    private var wingsRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(Color.dsAccent)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.08),
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Song title").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.white)
+                        Text("Artist").font(.system(size: 8)).foregroundStyle(Color.white.opacity(0.45))
+                    }
+                }
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10)).frame(height: 2)
+                    Capsule().fill(Color.dsAccent).frame(width: 62, height: 2)
+                }
+                HStack(spacing: 10) {
+                    Image(systemName: "backward.fill")
+                    Image(systemName: "pause.fill")
+                    Image(systemName: "forward.fill")
+                }.font(.system(size: 8)).foregroundStyle(Color.white.opacity(0.55))
+                    .frame(maxWidth: .infinity)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("UP NEXT").font(.system(size: 7, weight: .semibold, design: .monospaced))
+                    .kerning(0.6).foregroundStyle(Color.white.opacity(0.28))
+                previewEvent("Design review", "10:30 AM")
+                previewEvent("Project sync", "1:00 PM")
+            }.frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
     }
 
     private func previewEvent(_ title: String, _ time: String) -> some View {

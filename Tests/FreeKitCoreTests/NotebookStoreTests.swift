@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import FreeKitCore
 
 final class NotebookStoreTests: XCTestCase {
@@ -100,6 +101,57 @@ final class NotebookStoreTests: XCTestCase {
         let reloaded = NotebookStore(directory: directory)
         XCTAssertEqual(reloaded.count, 1)
         XCTAssertEqual(reloaded.notes().first?.title, "good")
+    }
+
+    // MARK: - Rich text serialization
+
+    private func sampleImageAttachment() -> NSTextAttachment {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = rep.representation(using: .png, properties: [:])!
+        let wrapper = FileWrapper(regularFileWithContents: png)
+        wrapper.preferredFilename = "image.png"
+        return NSTextAttachment(fileWrapper: wrapper)
+    }
+
+    func testImagelessBodySerializesAsRTFAndRoundTrips() throws {
+        let text = NSAttributedString(
+            string: "hello", attributes: [.font: NSFont.systemFont(ofSize: 13)])
+        XCTAssertFalse(NotebookRichText.hasAttachments(text))
+        let data = try XCTUnwrap(NotebookRichText.data(from: text))
+        let restored = try XCTUnwrap(NotebookRichText.attributedString(from: data))
+        XCTAssertEqual(restored.string, "hello")
+        XCTAssertFalse(NotebookRichText.hasAttachments(restored))
+    }
+
+    func testImageAttachmentSurvivesSerializeDeserialize() throws {
+        let body = NSMutableAttributedString(string: "before ")
+        body.append(NSAttributedString(attachment: sampleImageAttachment()))
+        body.append(NSAttributedString(string: " after"))
+        XCTAssertTrue(NotebookRichText.hasAttachments(body))
+
+        let data = try XCTUnwrap(NotebookRichText.data(from: body))
+        let restored = try XCTUnwrap(NotebookRichText.attributedString(from: data))
+        XCTAssertTrue(
+            NotebookRichText.hasAttachments(restored),
+            "RTFD round-trip must preserve the image attachment")
+    }
+
+    func testImageNoteSurvivesStoreReload() throws {
+        let body = NSMutableAttributedString(string: "photo: ")
+        body.append(NSAttributedString(attachment: sampleImageAttachment()))
+        let rich = try XCTUnwrap(NotebookRichText.data(from: body))
+
+        let store = NotebookStore(directory: directory)
+        let note = Note(title: "with image", plainText: body.string, rich: rich)
+        store.upsert(note)
+
+        let reloaded = try XCTUnwrap(NotebookStore(directory: directory).note(id: note.id))
+        let restored = try XCTUnwrap(
+            reloaded.rich.flatMap(NotebookRichText.attributedString(from:)))
+        XCTAssertTrue(NotebookRichText.hasAttachments(restored))
     }
 
     // MARK: - Apple Notes sync support

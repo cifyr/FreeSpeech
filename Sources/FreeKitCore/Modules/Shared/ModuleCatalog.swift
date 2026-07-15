@@ -90,8 +90,10 @@ public enum ModuleCatalog {
         summary: "Keep the Mac awake: timer tiers from the menu bar, or right-click to stay awake until you say stop.",
         symbolName: "pills", status: .available, ownsMenuBarItem: true)
 
+    // id stays "clop" (persisted keys are namespaced by id) though the tool now
+    // presents as "Simplify" — same trick as capslock/HyperKey above.
     public static let clop = ModuleInfo(
-        id: "clop", displayName: "Clop",
+        id: "clop", displayName: "Simplify",
         summary: "Automatic image, video, and PDF compression on copy.",
         symbolName: "rectangle.compress.vertical", status: .available, ownsMenuBarItem: true)
 
@@ -114,7 +116,7 @@ public enum ModuleCatalog {
 
     // Notch widget lives in the notch, so it never gets a menu bar item.
     public static let boringNotch = ModuleInfo(
-        id: "boringnotch", displayName: "Boring Notch",
+        id: "boringnotch", displayName: "Notch",
         summary: "Spotify and Apple Music controls beside the notch, with your next calendar event.",
         symbolName: "sparkles.rectangle.stack", status: .available, ownsMenuBarItem: false)
 
@@ -143,10 +145,11 @@ extension Settings {
         "module.\(id).\(suffix)"
     }
 
-    // Only Speech starts enabled: it predates the suite, and defaulting new
-    // tools off keeps the menu bar uncluttered until the user opts in.
+    // Every module starts disabled — the suite onboarding walks the user through
+    // turning tools on one at a time, so nothing (Speech included) claims the menu
+    // bar or a hotkey until it's been opted into.
     public func moduleEnabled(id: String) -> Bool {
-        (defaultsValue(forKey: moduleKey(id, "enabled")) as? Bool) ?? (id == ModuleCatalog.speech.id)
+        (defaultsValue(forKey: moduleKey(id, "enabled")) as? Bool) ?? false
     }
 
     public func setModuleEnabled(_ enabled: Bool, id: String) {
