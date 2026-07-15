@@ -171,9 +171,9 @@ struct DSToggle: View {
                 .frame(width: 56, height: 30)
         }
         .buttonStyle(.plain)
-        // A springy settle (slight overshoot) reads as the thumb sloshing into
-        // place — more liquid than the flat easeOut, which slid like a plate.
-        .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.6), value: isOn)
+        // .smooth is a no-overshoot spring: the thumb glides across and settles
+        // without the wobble a low-damping spring left on the metaball.
+        .animation(reduceMotion ? nil : .smooth(duration: 0.32), value: isOn)
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 }
