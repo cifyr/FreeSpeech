@@ -320,12 +320,12 @@ final class NotebookConfig: ObservableObject {
         }
     }
 
-    // 1.5 line height so typed lines (and each new paragraph on return) breathe.
-    static let lineHeightMultiple: CGFloat = 1.5
-
-    static func bodyParagraphStyle() -> NSMutableParagraphStyle {
+    // Extra space between lines so returns breathe. lineSpacing (gap after each
+    // line) rather than lineHeightMultiple (which scales the whole line box and
+    // stretches the insertion caret to match) — the caret stays text height.
+    static func bodyParagraphStyle(fontSize: CGFloat) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineHeightMultiple = lineHeightMultiple
+        style.lineSpacing = (fontSize * 0.55).rounded()
         return style
     }
 
@@ -333,7 +333,7 @@ final class NotebookConfig: ObservableObject {
         [
             .font: font(size: fontSize),
             .foregroundColor: NB.ink,
-            .paragraphStyle: Self.bodyParagraphStyle(),
+            .paragraphStyle: Self.bodyParagraphStyle(fontSize: fontSize),
         ]
     }
 }
@@ -1717,7 +1717,7 @@ final class RichTextEditorProxy: ObservableObject {
         var attrs = tv.typingAttributes
         attrs[.font] = bodyFont
         attrs[.foregroundColor] = NB.ink
-        attrs[.paragraphStyle] = NotebookConfig.bodyParagraphStyle()
+        attrs[.paragraphStyle] = NotebookConfig.bodyParagraphStyle(fontSize: bodyFont.pointSize)
         tv.typingAttributes = attrs
         tv.didChangeText()
     }
@@ -1758,7 +1758,7 @@ final class RichTextEditorProxy: ObservableObject {
         let style = NSMutableParagraphStyle()
         style.headIndent = allBulleted ? 0 : 18
         style.defaultTabInterval = 18
-        style.lineHeightMultiple = NotebookConfig.lineHeightMultiple
+        style.lineSpacing = (((tv.typingAttributes[.font] as? NSFont)?.pointSize ?? 13) * 0.55).rounded()
         if let first = paragraphStarts.first {
             // Marker edits shifted everything after the first paragraph start;
             // recompute the affected span before styling it.
