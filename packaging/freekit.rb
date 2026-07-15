@@ -7,15 +7,15 @@
 #   brew install --cask --no-quarantine freekit
 cask "freekit" do
   version "0.1.0"
-  sha256 "41a1e3b6e99e78ecd797faea0d94c5e5d3e95fd860afb11bea161a8e9e83715e"
+  sha256 "8921d45278425d945f449eab197c8c890012adc5597856bc0e6a9fb3dd686f12"
 
-  url "https://github.com/cifyr/FreeKit/releases/download/v#{version}/FreeKit.zip"
+  url "https://github.com/cifyr/FreeKit/releases/download/v#{version}/FreeKit.dmg"
   name "FreeKit"
   desc "Local-first macOS menu bar utility suite: dictation, conversion, compression, and more"
   homepage "https://github.com/cifyr/FreeKit"
 
   # Apple Silicon + macOS 26 only (on-device FoundationModels + whisper.cpp/Metal).
-  depends_on macos: ">= 26"
+  depends_on macos: :tahoe
   depends_on arch: :arm64
 
   app "FreeKit.app"
