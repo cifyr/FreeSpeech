@@ -25,6 +25,13 @@ enum EventRewriteVerdict {
 // are a scarce, failure-prone resource (macOS disables stalled ones), and
 // multiple active taps ordering against each other is undefined. All global
 // hotkeys and the HyperKey remap funnel through here.
+//
+// The tap runs on its OWN dedicated thread/run loop, not the main run loop.
+// macOS disables a tap whose run loop doesn't service events within ~1s, so
+// hosting it on main meant any main-thread stall (Notebook's synchronous Apple
+// Notes AppleScript, model load, a SwiftUI hitch) could drop the keypress that
+// arrived during the stall — the "hotkey sometimes doesn't fire" bug. On its
+// own user-interactive thread the tap stays responsive regardless of main.
 final class EventTapHub {
     final class HotkeyToken {
         fileprivate let recognizer: HotkeyRecognizer
@@ -41,10 +48,18 @@ final class EventTapHub {
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var tapRunLoop: CFRunLoop?
+    private var tapThread: Thread?
     private var tokens: [HotkeyToken] = []
     private var rewriters: [EventRewriter] = []
+    // Guards tokens/rewriters/recognizer state and the tap handles, all of which
+    // are now touched from both the tap thread (handle) and main (register/etc.).
+    private let lock = NSLock()
 
-    var isRunning: Bool { tap != nil }
+    var isRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return tapThread != nil
+    }
 
     // Registrations are accepted any time; they take effect once the tap starts
     // (Accessibility can be granted after launch).
@@ -52,37 +67,78 @@ final class EventTapHub {
                   onEvent: @escaping (HotkeyRecognizer.Direction) -> Void) -> HotkeyToken {
         let token = HotkeyToken(
             recognizer: HotkeyRecognizer(preset: preset), label: label, onEvent: onEvent)
+        lock.lock()
         tokens.append(token)
+        lock.unlock()
         Log.info("hotkey registered: \(label) = \(preset.displayName) [keyCode \(preset.keyCode)]")
         return token
     }
 
     func unregister(_ token: HotkeyToken) {
+        lock.lock()
         tokens.removeAll { $0 === token }
+        lock.unlock()
     }
 
     func update(_ token: HotkeyToken, preset: HotkeyPreset) {
+        lock.lock()
         token.recognizer.reset(preset: preset)
+        lock.unlock()
         Log.info("hotkey updated: \(token.label) = \(preset.displayName) [keyCode \(preset.keyCode)]")
     }
 
     func addRewriter(_ rewriter: EventRewriter) {
-        guard !rewriters.contains(where: { $0 === rewriter }) else { return }
-        rewriters.append(rewriter)
+        lock.lock()
+        if !rewriters.contains(where: { $0 === rewriter }) { rewriters.append(rewriter) }
+        lock.unlock()
     }
 
     func removeRewriter(_ rewriter: EventRewriter) {
+        lock.lock()
         rewriters.removeAll { $0 === rewriter }
+        lock.unlock()
     }
 
     func start() throws {
-        guard tap == nil else { return }
+        if isRunning { return }
 
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue)
 
+        // Install the tap on the dedicated thread and only return once it's up
+        // (or failed), so start() keeps its synchronous throwing contract.
+        let ready = DispatchSemaphore(value: 0)
+        var installError: Error?
+        let thread = Thread { [weak self] in
+            guard let self else { ready.signal(); return }
+            do {
+                try self.installTap(mask: mask)
+            } catch {
+                installError = error
+                ready.signal()
+                return
+            }
+            ready.signal()
+            // Keep this thread's run loop alive to service the tap until stop().
+            CFRunLoopRun()
+        }
+        thread.name = "com.cadenwarren.freekit.eventtap"
+        thread.qualityOfService = .userInteractive
+        lock.lock(); tapThread = thread; lock.unlock()
+        thread.start()
+        ready.wait()
+        if let installError {
+            lock.lock(); tapThread = nil; lock.unlock()
+            throw installError
+        }
+        lock.lock(); let n = tokens.count, r = rewriters.count; lock.unlock()
+        Log.info("event tap hub started (\(n) hotkeys, \(r) rewriters, dedicated thread)")
+    }
+
+    // Runs on the tap thread: creates the tap and wires it to this thread's loop.
+    private func installTap(mask: CGEventMask) throws {
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         // Active (not listen-only) tap: hotkey key events must be swallowed so a
         // combo like Cmd+K never reaches the frontmost app. Everything else passes.
@@ -102,30 +158,45 @@ final class EventTapHub {
             throw EventTapError.tapCreationFailed
         }
 
-        self.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        let rl = CFRunLoopGetCurrent()
+        lock.lock()
+        self.tap = tap
+        self.runLoopSource = source
+        self.tapRunLoop = rl
+        lock.unlock()
+        CFRunLoopAddSource(rl, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        Log.info("event tap hub started (\(tokens.count) hotkeys, \(rewriters.count) rewriters)")
     }
 
     func stop() {
+        lock.lock()
+        let tap = self.tap
+        let rl = self.tapRunLoop
+        let src = self.runLoopSource
+        self.tap = nil
+        self.runLoopSource = nil
+        self.tapRunLoop = nil
+        self.tapThread = nil
+        lock.unlock()
+
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        // CFRunLoopStop/RemoveSource are safe to call from another thread; this
+        // ends the dedicated thread's CFRunLoopRun so it exits cleanly.
+        if let rl {
+            if let src { CFRunLoopRemoveSource(rl, src, .commonModes) }
+            CFRunLoopStop(rl)
         }
-        tap = nil
-        runLoopSource = nil
     }
 
-    // Returns true when the event must not reach other apps.
+    // Returns true when the event must not reach other apps. Runs on the tap thread.
     private func handle(type: CGEventType, event: CGEvent) -> Bool {
         // macOS disables taps that stall or when the user triggers Secure Input;
         // re-enabling here is what keeps the hotkeys firing forever.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            lock.lock(); let tap = self.tap; lock.unlock()
             if let tap {
                 Log.error("event tap disabled by system (\(type.rawValue)), re-enabling")
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -140,6 +211,9 @@ final class EventTapHub {
         case .keyUp: kind = .keyUp
         default: return false
         }
+
+        lock.lock()
+        defer { lock.unlock() }
 
         // Rewriters (the HyperKey Caps Lock -> Hyper remap) must keep running even while
         // a recorder is capturing: the recorder's local NSEvent monitor only
@@ -186,6 +260,7 @@ final class EventTapHub {
 
     private func dispatch(_ token: HotkeyToken, _ direction: HotkeyRecognizer.Direction) {
         Log.info("hotkey fired: \(token.label) \(direction)")
+        // Hop to main: token callbacks touch AppKit windows and module state.
         DispatchQueue.main.async {
             token.onEvent(direction)
         }

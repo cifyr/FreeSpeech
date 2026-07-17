@@ -3,20 +3,25 @@ import FreeKitCore
 
 // While any recorder owns a session, the global event tap bypasses every
 // registered shortcut so recording a new chord can never trigger an old one.
+// Read from the event-tap thread and mutated from main, so guarded by a lock.
 enum ShortcutCaptureGate {
     private static var sessions: Set<UUID> = []
+    private static let lock = NSLock()
 
-    static var isActive: Bool { !sessions.isEmpty }
+    static var isActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !sessions.isEmpty
+    }
 
     static func activate() -> UUID {
         let id = UUID()
-        sessions.insert(id)
+        lock.lock(); sessions.insert(id); lock.unlock()
         return id
     }
 
     static func deactivate(_ id: UUID?) {
         guard let id else { return }
-        sessions.remove(id)
+        lock.lock(); sessions.remove(id); lock.unlock()
     }
 }
 
