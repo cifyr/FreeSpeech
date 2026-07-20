@@ -357,13 +357,19 @@ final class NotebookPanelController {
     // another app the "toggle" would vanish a panel you could barely see).
     // Visible and focused -> hide.
     func toggle() {
-        guard let panel, panel.isVisible else {
+        // A panel mid-dismiss is technically still isVisible but fading to alpha
+        // 0; treat that (and any not-fully-opaque state) as "not shown" so a
+        // summon re-presents it instead of racing the close animation.
+        guard let panel, panel.isVisible, panel.alphaValue > 0.5 else {
+            Log.info("notebook: toggle -> show (was not shown)")
             show()
             return
         }
         if panel.isKeyWindow {
+            Log.info("notebook: toggle -> hide (was key)")
             hide()
         } else {
+            Log.info("notebook: toggle -> focus (was visible, not key)")
             focus()
         }
     }
@@ -406,6 +412,7 @@ final class NotebookPanelController {
             DSMotionAppKit.presentWindow(panel)
             panel.orderFrontRegardless()
             panel.makeKey()
+            Log.info("notebook: focus done visible=\(panel.isVisible) alpha=\(panel.alphaValue) key=\(panel.isKeyWindow) frame=\(NSStringFromRect(panel.frame)) screen=\(panel.screen.map { NSStringFromRect($0.frame) } ?? "nil")")
         }
         model.focusEditor()
     }
@@ -715,68 +722,74 @@ final class NotebookViewModel: ObservableObject {
     // Reconciles the local note against its Apple Notes copy, keeping
     // whichever side has more (trimmed) text and pushing that version to the
     // other side so both converge instead of one clobbering the other.
+    // The AppleScript round-trips run off the main thread and call back on main;
+    // the note is re-read in each callback because it may have changed (another
+    // sync, an edit) while the script was in flight.
     private func syncMerge(id: UUID) {
         guard let note = store.note(id: id) else { return }
         guard let appleID = note.appleNoteID else {
             syncPush(note: note)
             return
         }
-        switch Self.runAppleScript(AppleNotesScript.pullWithModified(id: appleID)) {
-        case .success(let descriptor):
-            // The script returns {body, modification date}; a list descriptor is
-            // 1-indexed. Fall back to a plain push if it isn't shaped as expected.
-            guard descriptor.numberOfItems >= 2,
-                  let html = descriptor.atIndex(1)?.stringValue,
-                  let remoteModified = descriptor.atIndex(2)?.dateValue,
-                  let (title, content) = Self.parsePulledHTML(html, config: config) else {
-                syncPush(note: note)
-                return
-            }
-            // Most-recently-edited side wins. The epsilon absorbs the second or
-            // two between our own push and Notes stamping it, so a note we just
-            // pushed doesn't read as "remote is newer" and get adopted back.
-            if remoteModified > note.modified.addingTimeInterval(2) {
-                var updated = note
-                if !title.isEmpty { updated.title = String(title.prefix(60)) }
-                updated.plainText = content.string
-                updated.rich = NotebookRichText.data(from: content)
-                updated.modified = remoteModified
-                store.upsert(updated)
-                Log.info("notebook: adopted Apple Notes copy for \(note.id) (remote modified \(remoteModified) > local \(note.modified))")
-                if selectedID == id {
-                    refresh()
-                    reloadSelected()
+        Self.runAppleScript(AppleNotesScript.pullWithModified(id: appleID)) { [weak self] result in
+            guard let self, let note = self.store.note(id: id) else { return }
+            switch result {
+            case .success(let descriptor):
+                // The script returns {body, modification date}; a list descriptor
+                // is 1-indexed. Fall back to a plain push if not shaped as expected.
+                guard descriptor.numberOfItems >= 2,
+                      let html = descriptor.atIndex(1)?.stringValue,
+                      let remoteModified = descriptor.atIndex(2)?.dateValue,
+                      let (title, content) = Self.parsePulledHTML(html, config: self.config) else {
+                    self.syncPush(note: note)
+                    return
                 }
-            } else {
-                syncPush(note: note)
+                // Most-recently-edited side wins. The epsilon absorbs the second
+                // or two between our own push and Notes stamping it, so a note we
+                // just pushed doesn't read as "remote is newer" and get adopted back.
+                if remoteModified > note.modified.addingTimeInterval(2) {
+                    var updated = note
+                    if !title.isEmpty { updated.title = String(title.prefix(60)) }
+                    updated.plainText = content.string
+                    updated.rich = NotebookRichText.data(from: content)
+                    updated.modified = remoteModified
+                    self.store.upsert(updated)
+                    Log.info("notebook: adopted Apple Notes copy for \(note.id) (remote modified \(remoteModified) > local \(note.modified))")
+                    if self.selectedID == id {
+                        self.refresh()
+                        self.reloadSelected()
+                    }
+                } else {
+                    self.syncPush(note: note)
+                }
+            case .failure(let failure):
+                self.handleSyncFailure(failure, note: note, operation: "sync")
             }
-        case .failure(let failure):
-            handleSyncFailure(failure, note: note, operation: "sync")
         }
     }
 
-    @discardableResult
-    private func syncPush(note: Note) -> Bool {
+    private func syncPush(note: Note) {
         let html = Self.htmlForPush(note: note)
         let script = AppleNotesScript.push(htmlBody: html, existingID: note.appleNoteID)
         Log.info("notebook: pushing note \(note.id) to Apple Notes (linked=\(note.appleNoteID != nil), htmlBytes=\(html.utf8.count))")
-        switch Self.runAppleScript(script) {
-        case .success(let descriptor):
-            var updated = store.note(id: note.id) ?? note
-            if let newID = descriptor.stringValue, !newID.isEmpty {
-                updated.appleNoteID = newID
+        Self.runAppleScript(script) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let descriptor):
+                var updated = self.store.note(id: note.id) ?? note
+                if let newID = descriptor.stringValue, !newID.isEmpty {
+                    updated.appleNoteID = newID
+                }
+                // Notes stamps its own modification date to now on this write; match
+                // it locally so the next merge sees the two copies as even (recency
+                // tie) and pushes/does nothing rather than adopting the round-tripped
+                // remote back over the local original.
+                updated.modified = Date()
+                self.store.upsert(updated)
+                Log.info("notebook: pushed note \(note.id) -> Apple Notes id \(updated.appleNoteID ?? "?")")
+            case .failure(let failure):
+                self.handleSyncFailure(failure, note: note, operation: "push")
             }
-            // Notes stamps its own modification date to now on this write; match
-            // it locally so the next merge sees the two copies as even (recency
-            // tie) and pushes/does nothing rather than adopting the round-tripped
-            // remote back over the local original.
-            updated.modified = Date()
-            store.upsert(updated)
-            Log.info("notebook: pushed note \(note.id) -> Apple Notes id \(updated.appleNoteID ?? "?")")
-            return true
-        case .failure(let failure):
-            handleSyncFailure(failure, note: note, operation: "push")
-            return false
         }
     }
 
@@ -807,21 +820,35 @@ final class NotebookViewModel: ObservableObject {
         var isMissingNote: Bool { code == -1728 }
     }
 
-    // Runs on the main thread: NSAppleScript is not thread-safe, and both
-    // existing Finder automations in the suite run it the same way.
-    private static func runAppleScript(_ source: String)
-        -> Result<NSAppleEventDescriptor, AppleScriptFailure> {
-        guard let script = NSAppleScript(source: source) else {
-            return .failure(AppleScriptFailure(code: nil, message: "script construction failed"))
+    // A slow Apple Notes round-trip must not block the main thread (it would
+    // freeze the notebook UI, and historically stalled the global event tap
+    // hosted on the main run loop). Runs on a dedicated serial queue —
+    // NSAppleScript is not thread-safe, so serialization keeps executions
+    // non-concurrent — and delivers the result back on main.
+    private static let appleScriptQueue = DispatchQueue(
+        label: "com.cadenwarren.freekit.notebook.applescript", qos: .utility)
+
+    private static func runAppleScript(
+        _ source: String,
+        then completion: @escaping (Result<NSAppleEventDescriptor, AppleScriptFailure>) -> Void
+    ) {
+        appleScriptQueue.async {
+            let result: Result<NSAppleEventDescriptor, AppleScriptFailure>
+            if let script = NSAppleScript(source: source) {
+                var errorInfo: NSDictionary?
+                let descriptor = script.executeAndReturnError(&errorInfo)
+                if let errorInfo {
+                    result = .failure(AppleScriptFailure(
+                        code: errorInfo[NSAppleScript.errorNumber] as? Int,
+                        message: (errorInfo[NSAppleScript.errorMessage] as? String) ?? "\(errorInfo)"))
+                } else {
+                    result = .success(descriptor)
+                }
+            } else {
+                result = .failure(AppleScriptFailure(code: nil, message: "script construction failed"))
+            }
+            DispatchQueue.main.async { completion(result) }
         }
-        var errorInfo: NSDictionary?
-        let result = script.executeAndReturnError(&errorInfo)
-        if let errorInfo {
-            return .failure(AppleScriptFailure(
-                code: errorInfo[NSAppleScript.errorNumber] as? Int,
-                message: (errorInfo[NSAppleScript.errorMessage] as? String) ?? "\(errorInfo)"))
-        }
-        return .success(result)
     }
 
     // Title becomes the body's first (heading) line — Notes derives the note
@@ -978,6 +1005,15 @@ struct NotebookView: View {
 
     var body: some View {
         ZStack {
+            // Cmd+N makes a new note while the panel is focused. Kept at the root
+            // (not on the sidebar's New Note button) so it works with the sidebar
+            // hidden; invisible and zero-size so it's shortcut-only.
+            Button("New Note") { model.newNote() }
+                .keyboardShortcut("n", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+
             NotebookBackground()
             HStack(spacing: 0) {
                 if config.sidebarVisible {
