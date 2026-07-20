@@ -1014,6 +1014,13 @@ struct NotebookView: View {
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
 
+            // Cmd+S toggles the sidebar, mirroring the sidebar.left toolbar button.
+            Button("Toggle Sidebar") { config.sidebarVisible.toggle() }
+                .keyboardShortcut("s", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+
             NotebookBackground()
             HStack(spacing: 0) {
                 if config.sidebarVisible {
