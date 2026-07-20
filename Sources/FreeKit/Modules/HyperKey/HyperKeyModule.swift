@@ -11,10 +11,14 @@ import FreeKitCore
 // Lock acts as F18 until relaunch or reboot.
 //
 // The mapping has also been observed to silently drop out from under a
-// per-device HID service — independent of this app, with no crash/deactivate/
-// quit involved — most reliably around sleep/wake. Since there is no
-// notification for "the mapping you set got cleared," the practical fix is to
-// reassert it on every system wake rather than try to detect the drop.
+// per-device HID service — independent of this app, with no crash, deactivate,
+// quit, sleep, wake, or screen lock involved (confirmed: it reverted ~78
+// minutes after a wake-triggered reapply with zero intervening sleep/wake
+// events per `pmset -g log`). Since there is no notification for "the mapping
+// you set got cleared" and no reliable event that precedes the drop, the
+// practical fix is a periodic safety-net reapply in addition to the
+// wake-triggered one — bounding how long Caps Lock can be wrong to one
+// interval instead of "until you notice and relaunch."
 final class HyperKeyModule: AppModule, EventRewriter {
     let info = ModuleCatalog.hyperKey
 
@@ -22,6 +26,10 @@ final class HyperKeyModule: AppModule, EventRewriter {
     private let hub: EventTapHub
     private let mapper: HyperKeyMapper
     private var wakeObserver: NSObjectProtocol?
+    private var reapplyTimer: Timer?
+    // Short enough that a spontaneous drop is invisible in practice, long
+    // enough that spawning hidutil twice a cycle is noise-level overhead.
+    private static let reapplyInterval: TimeInterval = 60
 
     private enum Key {
         static let holdFlags = "holdFlags"
@@ -73,7 +81,13 @@ final class HyperKeyModule: AppModule, EventRewriter {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Log.info("hyperkey: system woke, reasserting HID remap")
-            self?.setHidRemapEnabled(true)
+            self?.setHidRemapEnabled(true, quiet: false)
+        }
+        reapplyTimer = Timer.scheduledTimer(withTimeInterval: Self.reapplyInterval, repeats: true) { [weak self] _ in
+            // Quiet: this fires every interval regardless of whether the
+            // mapping actually needs repair, so only log if hidutil itself
+            // reports a problem, not "applied" every cycle.
+            self?.setHidRemapEnabled(true, quiet: true)
         }
     }
 
@@ -82,6 +96,8 @@ final class HyperKeyModule: AppModule, EventRewriter {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
         wakeObserver = nil
+        reapplyTimer?.invalidate()
+        reapplyTimer = nil
         hub.removeRewriter(self)
         setHidRemapEnabled(false)
     }
@@ -136,7 +152,7 @@ final class HyperKeyModule: AppModule, EventRewriter {
 
     // MARK: - HID remap
 
-    private func setHidRemapEnabled(_ enabled: Bool) {
+    private func setHidRemapEnabled(_ enabled: Bool, quiet: Bool = false) {
         // Clearing sets an empty map, which would also drop any hidutil mappings
         // the user made outside this app — acceptable for a personal machine.
         let mapping = enabled
@@ -146,14 +162,14 @@ final class HyperKeyModule: AppModule, EventRewriter {
         // on recent macOS the global set alone does not reach the built-in
         // keyboard's HID service, which left Caps Lock unmapped in practice.
         runHidutil(["property", "--set", "{\"UserKeyMapping\":\(mapping)}"],
-                   enabled: enabled, scope: "global")
+                   enabled: enabled, scope: "global", quiet: quiet)
         runHidutil(["property",
                     "--matching", "{\"DeviceUsagePage\":1,\"DeviceUsage\":6}",
                     "--set", "{\"UserKeyMapping\":\(mapping)}"],
-                   enabled: enabled, scope: "keyboards")
+                   enabled: enabled, scope: "keyboards", quiet: quiet)
     }
 
-    private func runHidutil(_ arguments: [String], enabled: Bool, scope: String) {
+    private func runHidutil(_ arguments: [String], enabled: Bool, scope: String, quiet: Bool = false) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/hidutil")
         process.arguments = arguments
@@ -168,7 +184,7 @@ final class HyperKeyModule: AppModule, EventRewriter {
                     data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
                     encoding: .utf8) ?? ""
                 Log.error("hyperkey: hidutil (\(scope)) exited \(process.terminationStatus): \(detail)")
-            } else {
+            } else if !quiet {
                 Log.info("hyperkey: HID remap \(enabled ? "applied (Caps Lock -> F18)" : "cleared") [\(scope)]")
             }
         } catch {
